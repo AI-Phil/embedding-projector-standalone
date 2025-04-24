@@ -56,8 +56,8 @@
         <h2>1. Connect to Astra DB</h2>
         <form id="connection-form">
             <div>
-                <label for="db_name">Connection Nickname:</label>
-                <input type="text" id="db_name" name="db_name" placeholder="e.g., my-dev-db (used as namespace/keyspace)" required>
+                <label for="db_name">Connection Nickname (for display):</label>
+                <input type="text" id="db_name" name="db_name" placeholder="e.g., my-dev-db" required>
             </div>
             <div>
                 <label for="endpoint_url">Astra Data API Endpoint URL:</label>
@@ -66,6 +66,10 @@
             <div>
                 <label for="token">Astra Application Token:</label>
                 <input type="password" id="token" name="token" placeholder="AstraCS:..." required>
+            </div>
+            <div>
+                <label for="keyspace">Keyspace/Namespace (Optional):</label>
+                <input type="text" id="keyspace" name="keyspace" placeholder="default_keyspace">
             </div>
             <button type="submit">Connect & List Collections</button>
         </form>
@@ -76,27 +80,44 @@
         <div id="collections-list">
             <!-- Collection list will be populated here -->
         </div>
-        <button id="sample-button" disabled>Get Sample Data (10 Docs)</button>
+        <button id="sample-button" disabled>Fetch Sample & Metadata Keys</button>
     </section>
 
-    <section id="sampling-section" class="hidden">
-        <h2>3. Sample Data</h2>
-        <div id="sample-data">
-            <pre><code><!-- Sample data will be shown here --></code></pre>
+    <section id="metadata-selection-section" class="hidden">
+        <h2>3. Select Metadata Fields</h2>
+        <p>Select the fields to include in the metadata TSV file. The <code>_id</code> field is selected by default.</p>
+        <div id="metadata-keys-list">
+            <!-- Checkboxes for metadata keys will be populated here -->
         </div>
-        <button id="generate-config-button" disabled>Generate Projector Config</button>
+        <div>
+             <label for="tensor_name_override" style="margin-top: 1em;">Tensor Name (Optional Override):</label>
+             <input type="text" id="tensor_name_override" name="tensor_name_override" placeholder="Default: [Nickname]_[CollectionName]" style="width: 300px;">
+        </div>
+        <button id="preview-docs-button" style="margin-top: 1em;">Preview Sampled Documents</button>
+        <button id="generate-config-button" disabled>Generate Projector Config & TSV</button>
+    </section>
+
+    <section id="sampling-preview-section" class="hidden">
+        <h2>Sample Data Preview</h2>
+        <div id="sample-data">
+            <!-- Sample data preview will be shown here -->
+        </div>
     </section>
 
     <section id="config-section" class="hidden">
-        <h2>4. Generated Configuration</h2>
-        <p>Save the following content into files (`config.json`, `data.json`) in your projector directory:</p>
+        <h2>4. Generated Configuration & Metadata</h2>
+        <p>Save the following content into files (`config.json`, `data.json`, `metadata.tsv`) in your projector directory:</p>
         <div>
             <label for="config-json">config.json:</label>
             <textarea id="config-json" rows="10" cols="80" readonly></textarea>
         </div>
         <div>
-            <label for="data-json">data.json (Sample Data):</label>
+            <label for="data-json">data.json (Vector Data Only):</label>
             <textarea id="data-json" rows="10" cols="80" readonly></textarea>
+        </div>
+        <div>
+            <label for="metadata-tsv">metadata.tsv:</label>
+            <textarea id="metadata-tsv" rows="10" cols="80" readonly></textarea>
         </div>
     </section>
 

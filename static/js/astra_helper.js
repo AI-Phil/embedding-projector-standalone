@@ -2,18 +2,45 @@ const connectionForm = document.getElementById('connection-form');
 const collectionsSection = document.getElementById('collections-section');
 const collectionsListDiv = document.getElementById('collections-list');
 const sampleButton = document.getElementById('sample-button');
-const samplingSection = document.getElementById('sampling-section');
-const sampleDataPre = document.querySelector('#sample-data pre code');
+const metadataSelectionSection = document.getElementById('metadata-selection-section');
+const sampleDataContainer = document.getElementById('sample-data');
+const samplingPreviewSection = document.getElementById('sampling-preview-section');
+const metadataKeysListDiv = document.getElementById('metadata-keys-list');
+const previewDocsButton = document.getElementById('preview-docs-button');
 const generateConfigButton = document.getElementById('generate-config-button');
 const configSection = document.getElementById('config-section');
 const configJsonTextarea = document.getElementById('config-json');
 const dataJsonTextarea = document.getElementById('data-json');
+const metadataTsvTextarea = document.getElementById('metadata-tsv');
 const resultsDiv = document.getElementById('results');
 const errorDiv = document.getElementById('error');
+const tensorNameOverrideInput = document.getElementById('tensor_name_override');
 
 let currentConnection = null;
 let selectedCollection = null;
+let selectedCollectionDimension = null;
 let currentSampleData = null;
+let availableMetadataKeys = [];
+
+// --- Run on Page Load ---
+window.addEventListener('DOMContentLoaded', () => {
+    console.log("Page loaded. Checking session storage for connection details.");
+    const storedEndpoint = sessionStorage.getItem('astraEndpointUrl');
+    const storedToken = sessionStorage.getItem('astraToken');
+    const storedDbName = sessionStorage.getItem('astraDbName');
+    const storedKeyspace = sessionStorage.getItem('astraKeyspace');
+
+    if (storedEndpoint && storedToken) {
+        console.log("Found stored details, populating form.");
+        connectionForm.elements['endpoint_url'].value = storedEndpoint;
+        connectionForm.elements['token'].value = storedToken;
+        connectionForm.elements['db_name'].value = storedDbName || '';
+        connectionForm.elements['keyspace'].value = storedKeyspace || '';
+        showStatus("Loaded connection details from session storage. Click 'Connect & List Collections' to proceed.");
+    } else {
+         console.log("No connection details found in session storage.");
+    }
+});
 
 function showError(message) {
     errorDiv.textContent = message;
@@ -31,24 +58,29 @@ connectionForm.addEventListener('submit', async (event) => {
     event.preventDefault();
     showStatus('Connecting and fetching collections...');
     collectionsSection.classList.add('hidden');
-    samplingSection.classList.add('hidden');
+    metadataSelectionSection.classList.add('hidden');
+    samplingPreviewSection.classList.add('hidden');
     configSection.classList.add('hidden');
     sampleButton.disabled = true;
     generateConfigButton.disabled = true;
     collectionsListDiv.innerHTML = '';
+    metadataKeysListDiv.innerHTML = '';
 
     const formData = new FormData(connectionForm);
     const data = Object.fromEntries(formData.entries());
-    currentConnection = data; // Store connection details (consider security)
+    // Ensure keyspace is set, default if empty
+    if (!data.keyspace) {
+        data.keyspace = 'default_keyspace';
+    }
 
     try {
         // Call the backend API
         const response = await fetch('/api/astra/collections', {
-            method: 'POST', // Send credentials via POST
+            method: 'POST', 
             headers: {
                 'Content-Type': 'application/json'
             },
-            body: JSON.stringify(data) // Send credentials
+            body: JSON.stringify(data)
         });
 
         if (!response.ok) {
@@ -58,38 +90,81 @@ connectionForm.addEventListener('submit', async (event) => {
         const result = await response.json();
         
         if (result.collections && result.collections.length > 0) {
+            // SUCCESS: Store details (including keyspace) and proceed
+            currentConnection = data; // Store full data
+            sessionStorage.setItem('astraEndpointUrl', data.endpoint_url);
+            sessionStorage.setItem('astraToken', data.token);
+            sessionStorage.setItem('astraDbName', data.db_name);
+            sessionStorage.setItem('astraKeyspace', data.keyspace); // Save keyspace
+            console.log("Connection successful, saved details to session storage.");
+
             populateCollections(result.collections);
-            showStatus('Connected. Select a collection.');
+            showStatus('Connected. Select a vector-enabled collection.');
             collectionsSection.classList.remove('hidden');
-        } else if (result.collections) { // Empty list returned
-             showError('No collections found for this database/keyspace.');
-        } else { // Unexpected response
+        } else if (result.collections) {
+             // Clear stored data
+             sessionStorage.removeItem('astraEndpointUrl');
+             sessionStorage.removeItem('astraToken');
+             sessionStorage.removeItem('astraDbName');
+             sessionStorage.removeItem('astraKeyspace'); // Clear keyspace
+             showError('No vector-enabled collections found for this keyspace.');
+        } else {
+             // Clear stored data
+             sessionStorage.removeItem('astraEndpointUrl');
+             sessionStorage.removeItem('astraToken');
+             sessionStorage.removeItem('astraDbName');
+             sessionStorage.removeItem('astraKeyspace'); // Clear keyspace
              showError('Failed to fetch collections. Invalid response from server.');
              console.error('Invalid response format:', result);
         }
 
     } catch (error) {
+        // Clear stored data
+        sessionStorage.removeItem('astraEndpointUrl');
+        sessionStorage.removeItem('astraToken');
+        sessionStorage.removeItem('astraDbName');
+        sessionStorage.removeItem('astraKeyspace'); // Clear keyspace
         console.error('Error connecting/fetching collections:', error);
         showError(`Failed to connect or fetch collections: ${error.message}`);
     }
 });
 
 // --- 2. Populate and Handle Collection Selection ---
-function populateCollections(collections) {
+function populateCollections(collectionDetails) {
     collectionsListDiv.innerHTML = ''; // Clear previous
-    collections.forEach(colName => {
+    if (!collectionDetails || collectionDetails.length === 0) {
+        showError('No vector-enabled collections with dimensions found.');
+        return;
+    }
+
+    collectionDetails.forEach(colDetail => {
+        const colName = colDetail.name;
+        const dimension = colDetail.dimension;
+        if (dimension === 0) { // Handle vectorize placeholder
+            console.log(`Collection ${colName} uses vectorize, dimension not specified.`);
+            // Skip for now, or handle differently if needed?
+            // Maybe disable sampling/generation?
+            // For simplicity, let's skip displaying it in this version.
+            return; 
+        }
         const radio = document.createElement('input');
         radio.type = 'radio';
         radio.id = `col-${colName}`;
         radio.name = 'collection';
         radio.value = colName;
+        radio.dataset.dimension = dimension;
+
         radio.addEventListener('change', () => {
             selectedCollection = colName;
+            selectedCollectionDimension = parseInt(radio.dataset.dimension, 10);
             sampleButton.disabled = false;
-            showStatus(`Collection '${colName}' selected. Ready to sample.`);
-            samplingSection.classList.add('hidden'); // Hide sample if changing collection
+            showStatus(`Collection '${colName}' selected. Ready to fetch sample & keys.`);
+            metadataSelectionSection.classList.add('hidden');
+            samplingPreviewSection.classList.add('hidden');
             configSection.classList.add('hidden');
             generateConfigButton.disabled = true;
+            metadataKeysListDiv.innerHTML = '';
+            sampleDataContainer.innerHTML = '';
         });
 
         const label = document.createElement('label');
@@ -106,104 +181,272 @@ function populateCollections(collections) {
     });
 }
 
-// --- 3. Handle Sampling --- 
+// --- 3. Handle Sampling & Metadata Key Fetching --- 
 sampleButton.addEventListener('click', async () => {
     if (!selectedCollection || !currentConnection) {
         showError('Connection details or collection not selected.');
         return;
     }
-    showStatus(`Sampling data from '${selectedCollection}'...`);
-    samplingSection.classList.add('hidden');
+    showStatus(`Fetching sample data & metadata keys for '${selectedCollection}'...`);
+    metadataSelectionSection.classList.add('hidden');
+    samplingPreviewSection.classList.add('hidden');
     configSection.classList.add('hidden');
     generateConfigButton.disabled = true;
+    metadataKeysListDiv.innerHTML = '';
+    sampleDataContainer.innerHTML = '';
 
     try {
-        const response = await fetch('/api/astra/sample', {
+        // Step 3a: Fetch sample data
+        const sampleResponse = await fetch('/api/astra/sample', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
             },
-            // Pass connection details and collection name to backend
             body: JSON.stringify({ 
                 connection: currentConnection, 
                 collection_name: selectedCollection 
             })
         });
-        if (!response.ok) {
-            const errorData = await response.text();
-            throw new Error(`HTTP error ${response.status}: ${errorData}`);
+        if (!sampleResponse.ok) {
+            const errorData = await sampleResponse.text();
+            throw new Error(`Sample fetch error ${sampleResponse.status}: ${errorData}`);
         }
-        const result = await response.json();
+        const sampleResult = await sampleResponse.json();
 
-        if (result.sample_data) {
-            currentSampleData = result.sample_data;
-            sampleDataPre.textContent = JSON.stringify(result.sample_data, null, 2);
-            samplingSection.classList.remove('hidden');
-            generateConfigButton.disabled = false;
-            showStatus(`Sample data fetched for '${selectedCollection}'. Ready to generate config.`);
+        if (sampleResult.sample_data && sampleResult.sample_data.length > 0) {
+            currentSampleData = sampleResult.sample_data;
+            showStatus(`Sample data received. Fetching metadata keys...`);
+
+            // Step 3b: Fetch metadata keys based on sample
+            const keysResponse = await fetch('/api/astra/metadata_keys', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ sample_data: currentSampleData })
+            });
+            if (!keysResponse.ok) {
+                 const errorData = await keysResponse.text();
+                 throw new Error(`Metadata keys fetch error ${keysResponse.status}: ${errorData}`);
+            }
+            const keysResult = await keysResponse.json();
+
+            if (keysResult.keys) {
+                availableMetadataKeys = keysResult.keys;
+                populateMetadataKeys(availableMetadataKeys, currentSampleData);
+                metadataSelectionSection.classList.remove('hidden');
+                generateConfigButton.disabled = false;
+                previewDocsButton.disabled = false;
+                showStatus(`Sample data fetched for '${selectedCollection}'. Select metadata fields and generate config, or preview data.`);
+            } else {
+                showError('Failed to fetch metadata keys from sample data.');
+            }
+
         } else {
-            showError('Failed to fetch sample data. Invalid response from server.');
-            console.error('Invalid response format for sample data:', result);
+            showError('Failed to fetch sample data or sample is empty.');
+            console.error('Invalid response format or empty sample:', sampleResult);
         }
 
     } catch (error) {
-        console.error('Error sampling data:', error);
-        showError(`Failed to sample data: ${error.message}`);
+        console.error('Error during sampling or metadata key fetch:', error);
+        showError(`Operation failed: ${error.message}`);
     }
 });
 
-// --- 4. Handle Config Generation --- 
-generateConfigButton.addEventListener('click', () => {
-    if (!currentSampleData || !selectedCollection) {
-        showError('Sample data not available.');
-        return;
-    }
-    showStatus('Generating configuration files...');
-    
-    try {
-        // Generate data.json (just the sample)
-        const dataJsonContent = JSON.stringify(currentSampleData, null, 2);
-        dataJsonTextarea.value = dataJsonContent;
+// --- NEW: Display Sample Docs Nicely ---
+function displaySampleDocs(docs) {
+    const container = document.querySelector('#sample-data'); // Target the div directly
+    container.innerHTML = ''; // Clear previous content
 
-        // --- Attempt to detect vector dimension --- 
-        let vectorDim = 1; // Default
-        if (currentSampleData.length > 0) {
-            // Look for a field named '$vector' or 'vector' in the first document
-            const firstDoc = currentSampleData[0];
-            let vectorField = null;
-            if (Array.isArray(firstDoc?.$vector)) {
-                vectorField = firstDoc.$vector;
-            } else if (Array.isArray(firstDoc?.vector)) {
-                vectorField = firstDoc.vector;
+    docs.forEach((doc, index) => {
+        const docDiv = document.createElement('div');
+        docDiv.style.border = '1px solid #eee';
+        docDiv.style.marginBottom = '1em';
+        docDiv.style.padding = '0.5em';
+
+        const header = document.createElement('h5');
+        header.textContent = `Document ${index + 1} (ID: ${doc._id || 'N/A'})`;
+        header.style.marginTop = '0';
+        docDiv.appendChild(header);
+
+        const list = document.createElement('ul');
+        list.style.listStyle = 'none';
+        list.style.paddingLeft = '0.5em';
+
+        for (const key in doc) {
+            const listItem = document.createElement('li');
+            const strong = document.createElement('strong');
+            strong.textContent = `${key}: `;
+            listItem.appendChild(strong);
+
+            let valueStr;
+            const value = doc[key];
+
+            if (key === '$vector') {
+                valueStr = Array.isArray(value) ? `[${value.slice(0, 3).join(', ')} ... ] (${value.length} dims)` : String(value);
+            } else if (typeof value === 'object' && value !== null) {
+                try {
+                    valueStr = JSON.stringify(value);
+                } catch { 
+                    valueStr = String(value);
+                }
+            } else {
+                valueStr = String(value);
             }
             
-            if (vectorField) {
-                vectorDim = vectorField.length;
-            } else {
-                console.warn("Could not automatically detect vector field ('$vector' or 'vector') in the first sample document. Using dimension 1.");
-            }
-        } else {
-             console.warn("Sample data is empty. Using dimension 1.");
+            // Truncate long strings
+            const displayValue = valueStr.length > 100 ? valueStr.substring(0, 100) + '...' : valueStr;
+            listItem.appendChild(document.createTextNode(displayValue));
+            list.appendChild(listItem);
         }
-        // ----------------------------------------- 
+        docDiv.appendChild(list);
+        container.appendChild(docDiv);
+    });
+}
 
-        // Generate basic config.json
-        const configJsonContent = JSON.stringify({
-            tensorData: [
-                {
-                    name: `${currentConnection.db_name} - ${selectedCollection}`,
-                    tensorShape: [currentSampleData.length, vectorDim ], // Use detected or default dim
-                    tensorPath: "data.json", // Link to the data file
-                    metadataPath: "metadata.tsv" // Standard projector metadata file (optional)
-                }
-            ]
-        }, null, 2);
-        configJsonTextarea.value = configJsonContent;
+// --- NEW: Populate Metadata Key Checkboxes ---
+function populateMetadataKeys(keys, sampleData) {
+    metadataKeysListDiv.innerHTML = ''; // Clear previous
+    if (keys.length === 0) {
+        metadataKeysListDiv.textContent = 'No potential metadata fields found (excluding _id, $vector).';
+        return;
+    }
 
-        configSection.classList.remove('hidden');
-        showStatus('Configuration generated. Please copy the content into files.');
+    // Get the first document for type/length checking, if available
+    const firstDoc = (sampleData && sampleData.length > 0) ? sampleData[0] : null;
+    console.log("Populating metadata keys. First doc for checks:", firstDoc);
+
+    keys.forEach(keyName => {
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.id = `meta-${keyName}`;
+        checkbox.name = 'metadata_key';
+        checkbox.value = keyName;
+        
+        // --- Default check logic --- 
+        let shouldCheck = false;
+        if (keyName === '_id') {
+             shouldCheck = true;
+        } else if (firstDoc && firstDoc.hasOwnProperty(keyName)) {
+            const value = firstDoc[keyName];
+            const valueType = typeof value;
+
+            if (valueType === 'string' && value.length < 50) {
+                 console.log(`Checking key '${keyName}': String length ${value.length} < 50`);
+                 shouldCheck = true;
+            } else if (valueType === 'number') {
+                console.log(`Checking key '${keyName}': Is a number`);
+                 shouldCheck = true;
+            }
+        }
+        checkbox.checked = shouldCheck;
+        // ---------------------------
+
+        const label = document.createElement('label');
+        label.htmlFor = `meta-${keyName}`;
+        label.textContent = keyName;
+        label.style.display = 'inline-block';
+        label.style.marginLeft = '0.5em';
+        label.style.marginRight = '1.5em';
+
+        const div = document.createElement('div');
+        div.appendChild(checkbox);
+        div.appendChild(label);
+        metadataKeysListDiv.appendChild(div);
+    });
+}
+
+// --- Add Event Listener for Preview Button ---
+previewDocsButton.addEventListener('click', () => {
+    if (currentSampleData && currentSampleData.length > 0) {
+        console.log("Displaying stored sample data.");
+        displaySampleDocs(currentSampleData);
+        samplingPreviewSection.classList.remove('hidden'); // Ensure section is visible
+        showStatus("Displaying sample documents.");
+    } else {
+        showError("No sample data available to preview. Fetch sample data first.");
+        samplingPreviewSection.classList.add('hidden'); // Keep section hidden
+    }
+});
+
+// --- 4. Handle Saving Data to Server --- 
+generateConfigButton.addEventListener('click', async () => {
+    if (!currentConnection || !selectedCollection || !selectedCollectionDimension) {
+        showError('Connection details, collection, or dimension not available.');
+        return;
+    }
+    showStatus('Initiating data save process on the server...');
+    configSection.classList.add('hidden'); // Hide the old output section
+    configJsonTextarea.value = ''; // Clear old text areas
+    dataJsonTextarea.value = '';
+    metadataTsvTextarea.value = '';
+
+    const selectedKeys = Array.from(metadataKeysListDiv.querySelectorAll('input[name="metadata_key"]:checked')).map(cb => cb.value);
+    // Ensure _id is always included (backend handles this, but good practice)
+    if (!selectedKeys.includes('_id')) {
+        selectedKeys.push('_id');
+    }
+    console.log("Selected metadata keys for server save:", selectedKeys);
+
+    const tensorNameInput = tensorNameOverrideInput.value.trim();
+    // Use underscore as the default separator
+    const defaultTensorName = `${currentConnection.db_name || 'Astra'}_${selectedCollection}`;
+    let tensorName = tensorNameInput || defaultTensorName;
+    
+    // Sanitize the final tensor name (replace spaces only with underscores)
+    const sanitizedTensorName = tensorName.replace(/ /g, '_'); // Replace space only
+    console.log(`Sanitizing tensor name: '${tensorName}' -> '${sanitizedTensorName}'`);
+
+    if (!sanitizedTensorName) { // Check the sanitized name for emptiness
+        showError('Tensor name cannot be empty. Please provide one or ensure DB Name/Collection are set.');
+        return;
+    }
+
+    // Construct the request body for the backend
+    const requestBody = {
+        connection: currentConnection,
+        collection_name: selectedCollection,
+        vector_dimension: selectedCollectionDimension,
+        tensor_name: sanitizedTensorName, // Send the sanitized name
+        metadata_keys: selectedKeys,
+        // sample_data is not strictly needed by the backend save logic, send empty
+        sample_data: [] 
+    };
+
+    try {
+        console.log("Sending save request to /api/astra/save_data:", requestBody);
+        const response = await fetch('/api/astra/save_data', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(requestBody)
+        });
+
+        if (!response.ok) {
+            let errorMsg = `HTTP error ${response.status}`;
+            try {
+                const errorData = await response.json(); // Try parsing JSON error
+                errorMsg = errorData.detail || JSON.stringify(errorData); 
+            } catch (e) {
+                errorMsg = await response.text(); // Fallback to text error
+            }
+            throw new Error(errorMsg);
+        }
+
+        const result = await response.json();
+        console.log("Server response:", result);
+        showStatus(`Success! ${result.message}. Vectors: ${result.vectors_saved}. Files: ${result.vector_file}, ${result.metadata_file}. Config updated: ${result.config_file}`);
+        // Optionally clear selections or reset part of the form here
+        
     } catch (error) {
-         console.error('Error generating config:', error);
-         showError(`Failed to generate config: ${error.message}`);
+         console.error('Error saving data via backend:', error);
+         // Check if the error message is already informative
+         const displayError = error.message.startsWith('HTTP error') || error.message.includes('{') 
+                             ? error.message 
+                             : `Failed to save data: ${error.message}`;
+         showError(displayError);
+         // Keep config section hidden on error
+         configSection.classList.add('hidden'); 
     }
 }); 
