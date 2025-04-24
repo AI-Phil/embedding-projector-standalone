@@ -43,6 +43,7 @@ class SaveConfigRequest(BaseModel):
     vector_dimension: int
     metadata_keys: list[str]
     sample_data: list[dict]
+    document_limit: int | None = None # Add optional limit field
 
 # --- Global DataAPIClient cache ---
 astra_data_api_clients = {}
@@ -104,12 +105,30 @@ async def api_astra_get_collections(connection_info: ConnectionInfo):
 
                     # Check if vector is enabled (has dimension OR service)
                     if vector_options and (dimension or service_options):
+                        # Get estimated count
+                        est_count = "N/A"
+                        try:
+                            # Get the collection object to call count_documents
+                            collection_obj = db.get_collection(col_name)
+                            count_result = collection_obj.estimated_document_count()
+                            if isinstance(count_result, int):
+                                est_count = count_result
+                                print(f" - Collection '{col_name}': Estimated count = {est_count}")
+                            else:
+                                print(f" - Collection '{col_name}': Could not parse count from result: {count_result}")
+                                est_count = "Unknown"
+                        except Exception as count_e:
+                            print(f" - Warning: Could not get estimated count for '{col_name}': {count_e}")
+                            est_count = "Error"
+                            
+                        collection_detail = {"name": col_name, "dimension": dimension or 0, "count": est_count}
+                        
                         if dimension:
-                            print(f" - Found vector collection: {col_name} (Dimension: {dimension})")
-                            vector_collections_details.append({"name": col_name, "dimension": dimension})
+                            print(f" - Found vector collection: {col_name} (Dimension: {dimension}, Count: {est_count})")
+                            vector_collections_details.append(collection_detail)
                         else:
-                            print(f" - Found vectorize collection (no dimension specified): {col_name}")
-                            vector_collections_details.append({"name": col_name, "dimension": 0}) # Use 0 as placeholder
+                            print(f" - Found vectorize collection (no dimension specified): {col_name} (Count: {est_count})")
+                            vector_collections_details.append(collection_detail)
                     else:
                         print(f" - Skipping non-vector collection: {col_name}")
                 except AttributeError as ae:
@@ -184,7 +203,7 @@ async def api_astra_generate_tsv(request: Request):
 @app.post("/api/astra/save_data")
 async def save_astra_data(request: SaveConfigRequest):
     """Fetches data, saves vectors (.bytes) and metadata (.tsv), updates config."""
-    logging.info(f"Received request to save data for tensor: {request.tensor_name}")
+    logging.info(f"Received request to save data for tensor: {request.tensor_name}, Limit: {request.document_limit}") # Log limit
     
     # Define the data directory path locally using the global ROOT_DIR
     # This avoids the NameError related to accessing the global ASTRA_DATA_DIR directly
@@ -203,8 +222,15 @@ async def save_astra_data(request: SaveConfigRequest):
         for key in request.metadata_keys: # Use metadata_keys
              projection[key] = True 
         
-        logging.info(f"Fetching documents from {request.collection_name} with projection: {projection}")
-        documents = list(collection.find(projection=projection)) # Apply projection
+        # Determine find options based on document_limit
+        find_options = {"projection": projection}
+        if request.document_limit and request.document_limit > 0:
+            find_options["limit"] = request.document_limit
+            logging.info(f"Fetching documents from {request.collection_name} with projection and limit: {find_options}")
+        else:
+            logging.info(f"Fetching documents from {request.collection_name} with projection (no limit): {projection}")
+
+        documents = list(collection.find(**find_options)) # Apply options (projection and optional limit)
 
         if not documents:
             logging.warning(f"No documents found in collection '{request.collection_name}' with projection.")
@@ -380,13 +406,15 @@ async def save_astra_data(request: SaveConfigRequest):
              logging.exception(f"Unexpected error writing updated config file {config_file_path}")
              raise HTTPException(status_code=500, detail=f"Unexpected error writing config file: {str(e)}")
 
-
-        # Corrected f-string quote
+        # Return details, including the sanitized tensor name
+        # Formatting the final message happens in the frontend JS
         return {"message": f"Successfully saved data for tensor '{sanitized_tensor_name}'", 
                 "vector_file": os.path.basename(vector_file_path),
                 "metadata_file": os.path.basename(metadata_file_path),
-                "config_file": os.path.basename(config_file_path), # Use local variable for config path
-                "vectors_saved": len(vectors)} # Changed key name to match JS
+                "config_file": os.path.basename(config_file_path), 
+                "vectors_saved": len(vectors),
+                "limit_applied": request.document_limit # Include the limit applied for frontend formatting
+                }
 
     except HTTPException as e:
         # Log the error detail that will be sent to the client

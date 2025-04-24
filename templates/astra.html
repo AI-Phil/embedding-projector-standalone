@@ -93,6 +93,11 @@
              <label for="tensor_name_override" style="margin-top: 1em;">Tensor Name (Optional Override):</label>
              <input type="text" id="tensor_name_override" name="tensor_name_override" placeholder="Default: [Nickname]_[CollectionName]" style="width: 300px;">
         </div>
+        <div class="form-group" style="margin-top: 1em;">
+            <label for="doc_limit_input">Document Limit (Optional):</label>
+            <input type="number" id="doc_limit_input" name="doc_limit" min="1" placeholder="Leave blank for all documents" style="width: 300px; padding: 0.5em;">
+            <small id="doc_limit_help_text" style="display: block; margin-top: 0.3em; color: #6c757d;">Specify the maximum number of documents to fetch and save.</small>
+        </div>
         <button id="preview-docs-button" style="margin-top: 1em;">Preview Sampled Documents</button>
         <button id="generate-config-button" disabled>Generate Projector Config & TSV</button>
     </section>

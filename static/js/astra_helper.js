@@ -19,6 +19,7 @@ const tensorNameOverrideInput = document.getElementById('tensor_name_override');
 let currentConnection = null;
 let selectedCollection = null;
 let selectedCollectionDimension = null;
+let selectedCollectionCount = null;
 let currentSampleData = null;
 let availableMetadataKeys = [];
 
@@ -140,6 +141,18 @@ function populateCollections(collectionDetails) {
     collectionDetails.forEach(colDetail => {
         const colName = colDetail.name;
         const dimension = colDetail.dimension;
+        const count = colDetail.count; // Get the count from the detail
+
+        // Format count for display
+        let countDisplay = '(Count: Unknown)';
+        if (typeof count === 'number') {
+            countDisplay = `(Estimated: ${count.toLocaleString()} docs)`;
+        } else if (count !== 'N/A' && count !== 'Error') {
+            countDisplay = `(Count: ${count})`; // Display if non-standard but not error/NA
+        } else if (count === 'Error') {
+            countDisplay = '(Count: Error)';
+        }
+
         if (dimension === 0) { // Handle vectorize placeholder
             console.log(`Collection ${colName} uses vectorize, dimension not specified.`);
             // Skip for now, or handle differently if needed?
@@ -153,10 +166,36 @@ function populateCollections(collectionDetails) {
         radio.name = 'collection';
         radio.value = colName;
         radio.dataset.dimension = dimension;
+        radio.dataset.count = count;
 
         radio.addEventListener('change', () => {
             selectedCollection = colName;
             selectedCollectionDimension = parseInt(radio.dataset.dimension, 10);
+            selectedCollectionCount = radio.dataset.count;
+            
+            // Update help text for document limit
+            const helpTextElement = document.getElementById('doc_limit_help_text');
+            if (helpTextElement) {
+                let baseText = "Specify the maximum number of documents to fetch and save.";
+                let countInfo = "";
+                 if (selectedCollectionCount !== null && selectedCollectionCount !== undefined && selectedCollectionCount !== 'Error' && selectedCollectionCount !== 'Unknown' && selectedCollectionCount !== 'N/A') {
+                     try {
+                        // Try to format as number, otherwise use as string
+                        const numericCount = parseInt(selectedCollectionCount, 10);
+                        if (!isNaN(numericCount)) {
+                            countInfo = ` (Collection estimated count: ${numericCount.toLocaleString()})`;
+                        } else {
+                            countInfo = ` (Collection count: ${selectedCollectionCount})`; // Handle non-numeric counts returned
+                        }
+                    } catch (e) { 
+                         countInfo = ` (Collection count: ${selectedCollectionCount})`;
+                    }
+                 } else if (selectedCollectionCount === 'Error') {
+                     countInfo = " (Could not estimate collection count)";
+                 }
+                 helpTextElement.textContent = baseText + countInfo;
+            }
+
             sampleButton.disabled = false;
             showStatus(`Collection '${colName}' selected. Ready to fetch sample & keys.`);
             metadataSelectionSection.classList.add('hidden');
@@ -169,7 +208,7 @@ function populateCollections(collectionDetails) {
 
         const label = document.createElement('label');
         label.htmlFor = `col-${colName}`;
-        label.textContent = colName;
+        label.textContent = `${colName} ${countDisplay}`;
         label.style.display = 'inline-block';
         label.style.marginLeft = '0.5em';
         label.style.marginRight = '1.5em';
@@ -362,7 +401,8 @@ previewDocsButton.addEventListener('click', () => {
         console.log("Displaying stored sample data.");
         displaySampleDocs(currentSampleData);
         samplingPreviewSection.classList.remove('hidden'); // Ensure section is visible
-        showStatus("Displaying sample documents.");
+        showStatus("Displaying sample documents."); // Use showStatus for the message
+        // errorDiv.classList.add('hidden'); // showStatus already handles this
     } else {
         showError("No sample data available to preview. Fetch sample data first.");
         samplingPreviewSection.classList.add('hidden'); // Keep section hidden
@@ -375,11 +415,14 @@ generateConfigButton.addEventListener('click', async () => {
         showError('Connection details, collection, or dimension not available.');
         return;
     }
+    // Hide preview section when starting save
+    samplingPreviewSection.classList.add('hidden'); 
+    sampleDataContainer.innerHTML = ''; // Clear previous preview content
     showStatus('Initiating data save process on the server...');
-    configSection.classList.add('hidden'); // Hide the old output section
-    configJsonTextarea.value = ''; // Clear old text areas
-    dataJsonTextarea.value = '';
-    metadataTsvTextarea.value = '';
+    // configSection is already hidden and irrelevant now
+    // configJsonTextarea.value = ''; 
+    // dataJsonTextarea.value = '';
+    // metadataTsvTextarea.value = '';
 
     const selectedKeys = Array.from(metadataKeysListDiv.querySelectorAll('input[name="metadata_key"]:checked')).map(cb => cb.value);
     // Ensure _id is always included (backend handles this, but good practice)
@@ -402,6 +445,17 @@ generateConfigButton.addEventListener('click', async () => {
         return;
     }
 
+    // Get the document limit from the new input field
+    const docLimitInput = document.getElementById('doc_limit_input');
+    let documentLimit = null; // Default to null (no limit)
+    if (docLimitInput && docLimitInput.value) {
+        const limitVal = parseInt(docLimitInput.value, 10);
+        if (!isNaN(limitVal) && limitVal > 0) {
+            documentLimit = limitVal;
+        }
+    }
+    console.log("Document limit specified:", documentLimit);
+
     // Construct the request body for the backend
     const requestBody = {
         connection: currentConnection,
@@ -409,6 +463,7 @@ generateConfigButton.addEventListener('click', async () => {
         vector_dimension: selectedCollectionDimension,
         tensor_name: sanitizedTensorName, // Send the sanitized name
         metadata_keys: selectedKeys,
+        document_limit: documentLimit, // Add the limit
         // sample_data is not strictly needed by the backend save logic, send empty
         sample_data: [] 
     };
@@ -436,8 +491,19 @@ generateConfigButton.addEventListener('click', async () => {
 
         const result = await response.json();
         console.log("Server response:", result);
-        showStatus(`Success! ${result.message}. Vectors: ${result.vectors_saved}. Files: ${result.vector_file}, ${result.metadata_file}. Config updated: ${result.config_file}`);
-        // Optionally clear selections or reset part of the form here
+        
+        // Format success message with HTML line breaks and set innerHTML
+        const limitAppliedMsg = result.limit_applied ? ` (Limit: ${result.limit_applied})` : " (All documents)";
+        const successMessage = `Success! ${result.message}${limitAppliedMsg}.<br>
+Vectors Saved: ${result.vectors_saved}<br>
+Files Created:<br>
+- ${result.vector_file}<br>
+- ${result.metadata_file}<br>
+Config Updated: ${result.config_file}`;
+        resultsDiv.innerHTML = successMessage; // Use innerHTML to render <br>
+        errorDiv.classList.add('hidden'); // Explicitly hide error div
+        
+        samplingPreviewSection.classList.add('hidden'); // Ensure preview stays hidden on success
         
     } catch (error) {
          console.error('Error saving data via backend:', error);
@@ -446,7 +512,8 @@ generateConfigButton.addEventListener('click', async () => {
                              ? error.message 
                              : `Failed to save data: ${error.message}`;
          showError(displayError);
-         // Keep config section hidden on error
-         configSection.classList.add('hidden'); 
+         // Keep preview section hidden on error
+         samplingPreviewSection.classList.add('hidden'); 
+         // configSection is already hidden
     }
 }); 
