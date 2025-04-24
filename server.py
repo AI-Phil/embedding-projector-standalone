@@ -15,14 +15,14 @@ import numpy as np
 
 # Configuration
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
-STATIC_DIR = os.path.join(ROOT_DIR, "static")       # Specific static dir
-TEMPLATES_DIR = os.path.join(ROOT_DIR, "templates") # Directory for HTML templates
-MAIN_SERVER_HOST = "0.0.0.0"                        # Listen on all interfaces
-MAIN_SERVER_PORT = 8000                             # Port for users to access
+STATIC_DIR = os.path.join(ROOT_DIR, "static")
+TEMPLATES_DIR = os.path.join(ROOT_DIR, "templates")
+MAIN_SERVER_HOST = "0.0.0.0"
+MAIN_SERVER_PORT = 8000
 
 app = FastAPI()
 
-# --- Request Models (for validation) ---
+# Request Models
 class ConnectionInfo(BaseModel):
     endpoint_url: str
     token: str
@@ -43,9 +43,9 @@ class SaveConfigRequest(BaseModel):
     vector_dimension: int
     metadata_keys: list[str]
     sample_data: list[dict]
-    document_limit: int | None = None # Add optional limit field
+    document_limit: int | None = None
 
-# --- Global DataAPIClient cache ---
+# Global DataAPIClient cache
 astra_data_api_clients = {}
 
 def get_data_api_client(info: ConnectionInfo) -> Database:
@@ -70,19 +70,18 @@ def get_data_api_client(info: ConnectionInfo) -> Database:
                  raise ValueError(f"Failed to connect using Data API: {e}") from e
     return astra_data_api_clients[key]
 
-# --- Setup Templates ---
-# Create templates directory if it doesn't exist
+# Setup Templates
 if not os.path.exists(TEMPLATES_DIR):
     os.makedirs(TEMPLATES_DIR)
 templates = Jinja2Templates(directory=TEMPLATES_DIR)
 
-@app.get("/astra", response_class=HTMLResponse, include_in_schema=False) # include_in_schema=False to avoid duplicate docs
-@app.get("/astra/", response_class=HTMLResponse)                         # Add route for trailing slash
+@app.get("/astra", response_class=HTMLResponse, include_in_schema=False)
+@app.get("/astra/", response_class=HTMLResponse)
 async def get_astra_page(request: Request):
     """Serves the main HTML page for the Astra helper app."""
     return templates.TemplateResponse("astra.html", {"request": request})
 
-# --- API Routes (Defined Before Static Mounts) ---
+# API Routes
 @app.post("/api/astra/collections")
 async def api_astra_get_collections(connection_info: ConnectionInfo):
     """API endpoint to list vector-enabled collections and their dimensions."""
@@ -90,7 +89,6 @@ async def api_astra_get_collections(connection_info: ConnectionInfo):
     vector_collections_details = []
     try:
         db = get_data_api_client(connection_info)
-        # Use list_collections() to get details
         collections_result = db.list_collections()
         
         if collections_result:
@@ -103,12 +101,9 @@ async def api_astra_get_collections(connection_info: ConnectionInfo):
                     dimension = vector_options.dimension if vector_options else None
                     service_options = vector_options.service if vector_options else None
 
-                    # Check if vector is enabled (has dimension OR service)
                     if vector_options and (dimension or service_options):
-                        # Get estimated count
                         est_count = "N/A"
                         try:
-                            # Get the collection object to call count_documents
                             collection_obj = db.get_collection(col_name)
                             count_result = collection_obj.estimated_document_count()
                             if isinstance(count_result, int):
@@ -142,7 +137,7 @@ async def api_astra_get_collections(connection_info: ConnectionInfo):
     except ValueError as e: 
         return JSONResponse(status_code=400, content={"error": str(e)})
     except Exception as e:
-        print(f"Error listing collections via Data API: {e}") # Updated log
+        print(f"Error listing collections via Data API: {e}")
         return JSONResponse(status_code=500, content={"error": f"An unexpected error occurred: {e}"})
 
 @app.post("/api/astra/metadata_keys")
@@ -168,21 +163,16 @@ async def api_astra_sample_data(sample_request: SampleRequest):
     """API endpoint to sample data from a collection via Data API."""
     print(f"Received request to sample collection: {sample_request.collection_name}")
     try:
-        # Pass full connection info (including keyspace) to get the correct client
         db = get_data_api_client(sample_request.connection)
         collection = db.get_collection(sample_request.collection_name)
-        # Explicitly project the $vector field, let other fields come by default
         cursor = collection.find(limit=10, projection={"$vector": True}) 
         sample_docs_raw = list(cursor)
         print(f"Sampled {len(sample_docs_raw)} documents via Data API.")
 
-        # Convert DataAPIVector to list before sending to frontend
         sample_docs_processed = []
         for doc in sample_docs_raw:
             if "$vector" in doc and isinstance(doc["$vector"], DataAPIVector):
-                 # Convert DataAPIVector to a standard list
-                 # Usually, just casting to list() works for vector types
-                 doc["$vector"] = list(doc["$vector"]) 
+                doc["$vector"] = list(doc["$vector"]) 
             sample_docs_processed.append(doc)
 
         return {"sample_data": sample_docs_processed}
@@ -192,37 +182,21 @@ async def api_astra_sample_data(sample_request: SampleRequest):
         print(f"Error sampling data via Data API: {e}")
         return JSONResponse(status_code=500, content={"error": f"An unexpected error occurred while sampling: {e}"})
 
-# --- Placeholder for TSV Generation ---
-@app.post("/api/astra/generate_tsv")
-async def api_astra_generate_tsv(request: Request):
-     # TODO: Implement TSV generation
-     # Needs payload: { sample_data: list[dict], selected_keys: list[str] }
-     # data = await request.json()
-     return JSONResponse(status_code=501, content={"error": "TSV generation not implemented yet"})
-
 @app.post("/api/astra/save_data")
 async def save_astra_data(request: SaveConfigRequest):
     """Fetches data, saves vectors (.bytes) and metadata (.tsv), updates config."""
-    logging.info(f"Received request to save data for tensor: {request.tensor_name}, Limit: {request.document_limit}") # Log limit
+    logging.info(f"Received request to save data for tensor: {request.tensor_name}, Limit: {request.document_limit}")
     
-    # Define the data directory path locally using the global ROOT_DIR
-    # This avoids the NameError related to accessing the global ASTRA_DATA_DIR directly
     local_astra_data_dir = os.path.join(ROOT_DIR, "astra_data")
     
     try:
-        # Use the connection info from the request body
-        db = get_data_api_client(request.connection) # Use the correct function and pass the connection object
+        db = get_data_api_client(request.connection)
         collection = db.get_collection(request.collection_name)
 
-        # Fetch all documents (consider pagination for very large collections later)
-        # Project only necessary fields: _id, $vector, and selected metadata keys
         projection = {"$vector": True}
-        # Ensure _id is implicitly included or add explicitly if needed by find()
-        # Add other selected keys to projection
-        for key in request.metadata_keys: # Use metadata_keys
+        for key in request.metadata_keys:
              projection[key] = True 
         
-        # Determine find options based on document_limit
         find_options = {"projection": projection}
         if request.document_limit and request.document_limit > 0:
             find_options["limit"] = request.document_limit
@@ -230,40 +204,33 @@ async def save_astra_data(request: SaveConfigRequest):
         else:
             logging.info(f"Fetching documents from {request.collection_name} with projection (no limit): {projection}")
 
-        documents = list(collection.find(**find_options)) # Apply options (projection and optional limit)
+        documents = list(collection.find(**find_options))
 
         if not documents:
             logging.warning(f"No documents found in collection '{request.collection_name}' with projection.")
             raise HTTPException(status_code=404, detail=f"No documents found in the collection '{request.collection_name}'. Check if the collection is empty or the projection filters out all docs.")
 
-        # Prepare file paths
-        # Ensure the output directory exists right before we need it
         try:
-            os.makedirs(local_astra_data_dir, exist_ok=True) # Use local variable
-            logging.info(f"Ensured output directory exists: {local_astra_data_dir}") # Use local variable
+            os.makedirs(local_astra_data_dir, exist_ok=True)
+            logging.info(f"Ensured output directory exists: {local_astra_data_dir}")
         except OSError as e:
-            logging.error(f"Could not create output directory {local_astra_data_dir}: {e}") # Use local variable
+            logging.error(f"Could not create output directory {local_astra_data_dir}: {e}")
             raise HTTPException(status_code=500, detail=f"Server configuration error: Could not create data directory.")
 
-        # Sanitize the tensor name received from the request (replace spaces with underscores)
         sanitized_tensor_name = request.tensor_name.replace(" ", "_")
         logging.info(f"Sanitized tensor name: '{request.tensor_name}' -> '{sanitized_tensor_name}'")
 
-        # Use tensor_name for filenames, ensuring it's filesystem-safe
-        # Base the safe name on the *sanitized* tensor name
         safe_tensor_name = "".join(c if c.isalnum() or c in ('_', '-') else '_' for c in sanitized_tensor_name)
         if not safe_tensor_name:
             safe_tensor_name = "default_tensor"
             logging.warning(f"Sanitized tensor name '{sanitized_tensor_name}' resulted in empty safe name. Using '{safe_tensor_name}'.")
 
-        vector_file_path = os.path.join(local_astra_data_dir, f"{safe_tensor_name}.bytes") # Use safe name for path
-        metadata_file_path = os.path.join(local_astra_data_dir, f"{safe_tensor_name}_metadata.tsv") # Use safe name for path
+        vector_file_path = os.path.join(local_astra_data_dir, f"{safe_tensor_name}.bytes")
+        metadata_file_path = os.path.join(local_astra_data_dir, f"{safe_tensor_name}_metadata.tsv")
 
-        # Extract vectors and metadata
         vectors = []
-        metadata_rows = [] # Changed name for clarity
-        # Ensure _id is first, then other selected keys
-        metadata_header = ["_id"] + [key for key in request.metadata_keys if key != "_id"] # Use metadata_keys
+        metadata_rows = []
+        metadata_header = ["_id"] + [key for key in request.metadata_keys if key != "_id"]
         logging.info(f"Processing {len(documents)} documents. Metadata header: {metadata_header}")
 
         processed_doc_count = 0
@@ -271,35 +238,30 @@ async def save_astra_data(request: SaveConfigRequest):
         skipped_dimension_count = 0
 
         for doc in documents:
-            doc_id = doc.get('_id', 'UNKNOWN_ID') # Get ID for logging
+            doc_id = doc.get('_id', 'UNKNOWN_ID')
             
             if "$vector" not in doc or not isinstance(doc["$vector"], (list, DataAPIVector)):
                  logging.warning(f"Document {doc_id} missing or has invalid $vector type ({type(doc.get('$vector'))}). Skipping.")
                  skipped_vector_count += 1
                  continue
 
-            # Handle DataAPIVector explicitly
             if isinstance(doc["$vector"], DataAPIVector):
                  doc["$vector"] = list(doc["$vector"])
             
-            # Ensure vector has the expected dimension
-            if len(doc["$vector"]) != request.vector_dimension: # Use correct field name
+            if len(doc["$vector"]) != request.vector_dimension:
                  logging.warning(f"Document {doc_id} vector dimension ({len(doc['$vector'])}) mismatch. Expected {request.vector_dimension}. Skipping.")
                  skipped_dimension_count += 1
                  continue
                  
-            # Append vector (convert to float32)
             try:
                  vectors.append(np.array(doc["$vector"], dtype=np.float32))
             except ValueError as ve:
                  logging.warning(f"Document {doc_id} vector could not be converted to float32 array: {ve}. Skipping.")
-                 skipped_vector_count += 1 # Count as a vector issue
+                 skipped_vector_count += 1
                  continue
 
-            # Construct metadata row based on header order
             row_data = []
             for key in metadata_header:
-                 # Handle potential missing keys and escape TSV special chars
                  value = doc.get(key, '')
                  value_str = str(value).replace('\t', ' ').replace('\n', ' ').replace('\r', ' ')
                  row_data.append(value_str)
@@ -317,13 +279,11 @@ async def save_astra_data(request: SaveConfigRequest):
             logging.error(error_detail)
             raise HTTPException(status_code=400, detail=error_detail)
 
-        # Save vectors as .bytes (binary float32)
-        # Use with statement for automatic file closing
-        vector_data = np.array(vectors) # This creates a potentially large intermediate array
+        vector_data = np.array(vectors)
         logging.info(f"Attempting to save {len(vectors)} vectors ({vector_data.nbytes} bytes) to {vector_file_path}")
         try:
             with open(vector_file_path, 'wb') as vf:
-                 vf.write(vector_data.tobytes()) # Write directly
+                 vf.write(vector_data.tobytes())
             logging.info(f"Successfully saved vectors to {vector_file_path}")
         except IOError as e:
              logging.error(f"IOError saving vector file {vector_file_path}: {e}")
@@ -332,12 +292,11 @@ async def save_astra_data(request: SaveConfigRequest):
             logging.exception(f"Unexpected error saving vector file {vector_file_path}")
             raise HTTPException(status_code=500, detail=f"Unexpected error writing vector file: {str(e)}")
 
-        # Save metadata as .tsv
         logging.info(f"Attempting to save metadata for {len(metadata_rows)} documents to {metadata_file_path}")
         try:
             with open(metadata_file_path, 'w', encoding='utf-8') as mf:
                 mf.write("\t".join(metadata_header) + "\n")
-                mf.write("\n".join(metadata_rows)) # Corrected: newline outside quotes
+                mf.write("\n".join(metadata_rows))
             logging.info(f"Successfully saved metadata to {metadata_file_path}")
         except IOError as e:
              logging.error(f"IOError saving metadata file {metadata_file_path}: {e}")
@@ -346,23 +305,22 @@ async def save_astra_data(request: SaveConfigRequest):
             logging.exception(f"Unexpected error saving metadata file {metadata_file_path}")
             raise HTTPException(status_code=500, detail=f"Unexpected error writing metadata file: {str(e)}")
 
-        # Update projector config JSON
         config = {}
-        config_file_path = os.path.join(local_astra_data_dir, "astra_projector_config.json") # Use local variable for config path
+        config_file_path = os.path.join(local_astra_data_dir, "astra_projector_config.json")
         logging.info(f"Attempting to read and update config file: {config_file_path}")
         if os.path.exists(config_file_path):
             try:
-                with open(config_file_path, 'r', encoding='utf-8') as f: # Specify encoding
+                with open(config_file_path, 'r', encoding='utf-8') as f:
                     config = json.load(f)
-                    if not isinstance(config, dict): # Basic validation
+                    if not isinstance(config, dict):
                         logging.warning(f"Config file {config_file_path} does not contain a JSON object. Resetting.")
                         config = {}
             except json.JSONDecodeError as e:
                 logging.warning(f"Could not decode existing config file {config_file_path}: {e}. Starting fresh.")
                 config = {}
-            except Exception as e: # Catch other potential file errors
+            except Exception as e:
                  logging.error(f"Error reading config file {config_file_path}: {e}. Starting fresh.")
-                 config = {} # Ensure config is an empty dict
+                 config = {}
         else:
              logging.info(f"Config file {config_file_path} not found. Creating new one.")
         
@@ -370,33 +328,28 @@ async def save_astra_data(request: SaveConfigRequest):
              logging.warning("Config 'embeddings' key missing or not a list. Initializing.")
              config["embeddings"] = []
 
-        # Check if tensor already exists and update, otherwise add
-        # Use the *sanitized* tensor name for the config entry
         tensor_entry = {
             "tensorName": sanitized_tensor_name, 
             "tensorShape": [len(vectors), request.vector_dimension],
-            "tensorPath": os.path.relpath(vector_file_path, local_astra_data_dir), 
-            "metadataPath": os.path.relpath(metadata_file_path, local_astra_data_dir)
+            "tensorPath": os.path.relpath(vector_file_path, ROOT_DIR), 
+            "metadataPath": os.path.relpath(metadata_file_path, ROOT_DIR)
         }
 
         found_index = -1
         for i, entry in enumerate(config["embeddings"]):
-            # Ensure entry is a dict and has tensorName before comparing
-            # Compare against the *sanitized* tensor name
             if isinstance(entry, dict) and entry.get("tensorName") == sanitized_tensor_name:
                 found_index = i
                 break
         
         if found_index != -1:
-             logging.info(f"Updating existing entry for tensor '{sanitized_tensor_name}' in config at index {found_index}.")
-             config["embeddings"][found_index] = tensor_entry
-        else:
-             # Corrected f-string quote
-             logging.info(f"Adding new entry for tensor '{sanitized_tensor_name}' to config.")
-             config["embeddings"].append(tensor_entry)
+             logging.info(f"Removing existing entry for tensor '{sanitized_tensor_name}' from index {found_index}.")
+             del config["embeddings"][found_index]
+        
+        logging.info(f"Inserting entry for tensor '{sanitized_tensor_name}' at the beginning of the config list.")
+        config["embeddings"].insert(0, tensor_entry)
 
         try:
-            with open(config_file_path, 'w', encoding='utf-8') as f: # Use local variable for config path
+            with open(config_file_path, 'w', encoding='utf-8') as f:
                 json.dump(config, f, indent=2)
             logging.info(f"Successfully updated config file {config_file_path}")
         except IOError as e:
@@ -406,48 +359,38 @@ async def save_astra_data(request: SaveConfigRequest):
              logging.exception(f"Unexpected error writing updated config file {config_file_path}")
              raise HTTPException(status_code=500, detail=f"Unexpected error writing config file: {str(e)}")
 
-        # Return details, including the sanitized tensor name
-        # Formatting the final message happens in the frontend JS
+        config_relative_path = os.path.relpath(config_file_path, ROOT_DIR)
+        logging.info(f"Returning config path relative to root: {config_relative_path}")
         return {"message": f"Successfully saved data for tensor '{sanitized_tensor_name}'", 
                 "vector_file": os.path.basename(vector_file_path),
                 "metadata_file": os.path.basename(metadata_file_path),
-                "config_file": os.path.basename(config_file_path), 
+                "config_file": config_relative_path, 
                 "vectors_saved": len(vectors),
-                "limit_applied": request.document_limit # Include the limit applied for frontend formatting
+                "limit_applied": request.document_limit
                 }
 
     except HTTPException as e:
-        # Log the error detail that will be sent to the client
         logging.error(f"HTTP Exception during save_astra_data: Status={e.status_code}, Detail='{e.detail}'")
-        raise e # Re-raise the HTTPException to be handled by FastAPI
+        raise e
     except Exception as e:
-        logging.exception("Unexpected error during save_astra_data process") # Log full traceback
-        # Return a generic 500 error to the client
+        logging.exception("Unexpected error during save_astra_data process")
         raise HTTPException(status_code=500, detail=f"An internal server error occurred. Check server logs for details.")
 
-# --- Setup Static Files (CSS, JS, etc. - Mount Specific Paths First) ---
-# Create static directory if it doesn't exist
+# Setup Static Files (CSS, JS, etc. - Mount Specific Paths First)
 if not os.path.exists(STATIC_DIR):
     os.makedirs(STATIC_DIR)
-# Mount static files at /static path
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static_assets")
 
-# --- Serve Static Files (Embedding Projector Root - Mount Last) ---
-# Serve index.html and other root files from the main project directory
+# Serve Static Files (Embedding Projector Root - Mount Last)
 app.mount("/", StaticFiles(directory=ROOT_DIR, html=True), name="root_static")
 
-
-# --- Startup/Shutdown Events (Removed Streamlit logic) ---
 @app.on_event("startup")
 async def startup_event():
     print("Server starting up...")
-    # Any other startup logic can go here
 
 @app.on_event("shutdown")
 def shutdown_event():
     print("Server shutting down...")
-    # Any cleanup logic can go here
-
 
 if __name__ == "__main__":
     print(f"Starting server on http://{MAIN_SERVER_HOST}:{MAIN_SERVER_PORT}")
