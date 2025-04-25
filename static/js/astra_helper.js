@@ -57,7 +57,7 @@ window.addEventListener('DOMContentLoaded', () => {
         connectionForm.elements['token'].value = storedToken;
         connectionForm.elements['db_name'].value = storedDbName || '';
         connectionForm.elements['keyspace'].value = storedKeyspace || '';
-        showStatus("Loaded connection details from session storage. Click 'Connect & List Collections' to proceed.");
+        showStatus("Loaded connection details from session storage. Click the appropriate 'List' button to proceed.");
     }
 });
 

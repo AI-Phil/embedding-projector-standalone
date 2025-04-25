@@ -4,155 +4,154 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Astra DB Helper</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
     <style>
-        body {
-            font-family: sans-serif;
-            margin: 2em;
-        }
-        label {
-            display: block;
-            margin-top: 1em;
-        }
-        input[type="text"],
-        input[type="password"] {
-            width: 300px;
+        /* Basic styles for consistency */
+        label { display: block; margin-top: 0.5em; margin-bottom: 0.2em; font-weight: 500;}
+        input[type="text"], input[type="password"], input[type="number"] {
             padding: 0.5em;
-            margin-top: 0.2em;
+            border: 1px solid #ccc;
+            border-radius: 0.375rem; /* rounded-md */
+            width: 100%;
         }
         button {
             padding: 0.7em 1.5em;
             margin-top: 1em;
             cursor: pointer;
+            border-radius: 0.375rem; /* rounded-md */
+            background-color: #3b82f6; /* bg-blue-500 */
+            color: white;
         }
-        .hidden {
-            display: none;
+        button:hover {
+             background-color: #2563eb; /* hover:bg-blue-700 */
         }
-        #results,
-        #error {
-            margin-top: 1em;
-            padding: 1em;
-            border: 1px solid #ccc;
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
         }
-        #error {
-            border-color: red;
-            color: red;
-        }
-        #collections-list,
-        #sample-data {
-            margin-top: 0.5em;
-        }
-        pre {
-            background-color: #f4f4f4;
-            padding: 1em;
-            border: 1px solid #ddd;
-            overflow-x: auto;
-        }
+        .hidden { display: none; }
+        #error { margin-top: 1em; padding: 1em; border: 1px solid red; color: red; border-radius: 0.375rem; }
+        #results { margin-top: 1em; padding: 1em; border: 1px solid #ccc; border-radius: 0.375rem; background-color: #f9f9f9; }
+        pre { background-color: #f4f4f4; padding: 1em; border: 1px solid #ddd; overflow-x: auto; border-radius: 0.25rem; margin-top: 0.5em; }
+        .config-section-title { font-size: 1.25rem; font-weight: 600; margin-bottom: 1rem; margin-top: 1.5rem; }
+        .form-group { margin-bottom: 1rem; }
+        .radio-group label { display: inline-block; margin-left: 0.3em; margin-right: 1em; font-weight: normal; }
+        .radio-group input[type="radio"] { margin-right: 0.1em; }
+        .help-text { font-size: 0.875rem; color: #6c757d; margin-top: 0.25rem; }
     </style>
 </head>
-<body>
-    <h1>Astra DB Connection & Sampling Helper</h1>
+<body class="bg-gray-100 p-8">
+    <div class="max-w-7xl mx-auto bg-white p-6 rounded shadow">
+        <h1 class="text-2xl font-bold mb-6">Astra DB Connection & Sampling Helper</h1>
+        <div class="mb-4">
+            <a href="/?config=astra_data/astra_projector_config.json" target="_blank" class="text-blue-600 hover:text-blue-800 hover:underline">
+                &raquo; Go to Embedding Projector (using Astra config)
+            </a>
+        </div>
 
-    <section id="connection-section">
-        <h2>1. Connect to Astra DB</h2>
-        <form id="connection-form">
-            <div>
-                <label for="db_name">Connection Nickname (for display):</label>
-                <input type="text" id="db_name" name="db_name" placeholder="e.g., my-dev-db" required>
+        <section id="connection-section">
+            <h2 class="config-section-title">1. Connect to Astra DB</h2>
+            <form id="connection-form">
+                <div class="form-group">
+                    <label for="db_name">Connection Nickname (for display):</label>
+                    <input type="text" id="db_name" name="db_name" placeholder="e.g., my-dev-db" required class="mt-1">
+                </div>
+                <div class="form-group">
+                    <label for="endpoint_url">Astra Data API Endpoint URL:</label>
+                    <input type="text" id="endpoint_url" name="endpoint_url" placeholder="https://<db-id>-<region>.apps.astra.datastax.com/api/json/v1" required class="mt-1">
+                </div>
+                <div class="form-group">
+                    <label for="token">Astra Application Token:</label>
+                    <input type="password" id="token" name="token" placeholder="AstraCS:..." required class="mt-1">
+                </div>
+                <div class="form-group">
+                    <label for="keyspace">Keyspace/Namespace (Optional):</label>
+                    <input type="text" id="keyspace" name="keyspace" placeholder="default_keyspace" class="mt-1">
+                </div>
+                <button type="button" id="connect-collections-button" class="bg-blue-500 hover:bg-blue-700">List Collections</button>
+                <button type="button" id="connect-tables-button" class="bg-blue-500 hover:bg-blue-700 ml-2">List CQL Tables</button>
+            </form>
+        </section>
+
+        <section id="collections-section" class="hidden mt-6">
+            <h2 class="config-section-title">2. Select Collection</h2>
+            <div id="collections-list" class="p-3 border rounded bg-gray-50 min-h-[50px]">
+                <!-- Collection list will be populated here -->
             </div>
-            <div>
-                <label for="endpoint_url">Astra Data API Endpoint URL:</label>
-                <input type="text" id="endpoint_url" name="endpoint_url" placeholder="https://<db-id>-<region>.apps.astra.datastax.com/api/json/v1" required>
+            <button id="sample-button" class="bg-green-500 hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed" disabled>Fetch Sample & Metadata Keys</button>
+        </section>
+
+        <section id="tables-section" class="hidden mt-6">
+            <h2 class="config-section-title">2. Select Table and Vector Column</h2>
+            <div id="tables-list" class="p-3 border rounded bg-gray-50 min-h-[50px]">
+                <!-- Table list will be populated here -->
             </div>
-            <div>
-                <label for="token">Astra Application Token:</label>
-                <input type="password" id="token" name="token" placeholder="AstraCS:..." required>
+            <button id="sample-table-button" class="bg-green-500 hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed" disabled>Fetch Sample & Metadata Keys</button>
+        </section>
+
+        <section id="metadata-selection-section" class="hidden mt-6">
+            <h2 class="config-section-title">3. Select Metadata Fields</h2>
+            <p class="text-sm text-gray-600 mb-2">Select the fields to include in the metadata TSV file. The primary identifier (<code>_id</code> for collections, or derived primary key for tables) will be included automatically.</p>
+            <div id="metadata-keys-list" class="p-3 border rounded bg-gray-50 min-h-[50px]">
+                <!-- Checkboxes for metadata keys will be populated here -->
             </div>
-            <div>
-                <label for="keyspace">Keyspace/Namespace (Optional):</label>
-                <input type="text" id="keyspace" name="keyspace" placeholder="default_keyspace">
+            <div class="form-group mt-4">
+                 <label for="tensor_name_override">Tensor Name (Optional Override):</label>
+                 <input type="text" id="tensor_name_override" name="tensor_name_override" placeholder="Default: [Nickname]_[Collection/Table Name]" class="mt-1">
             </div>
-            <button type="button" id="connect-collections-button">List Collections</button>
-            <button type="button" id="connect-tables-button">List CQL Tables</button>
-        </form>
-    </section>
-
-    <section id="collections-section" class="hidden">
-        <h2>2. Select Collection</h2>
-        <div id="collections-list">
-            <!-- Collection list will be populated here -->
-        </div>
-        <button id="sample-button" disabled>Fetch Sample & Metadata Keys</button>
-    </section>
-
-    <section id="tables-section" class="hidden">
-        <h2>2. Select Table and Vector Column</h2>
-        <div id="tables-list">
-            <!-- Table list will be populated here -->
-        </div>
-        <button id="sample-table-button" disabled>Fetch Sample & Metadata Keys</button>
-    </section>
-
-    <section id="metadata-selection-section" class="hidden">
-        <h2>3. Select Metadata Fields</h2>
-        <p>Select the fields to include in the metadata TSV file. The primary identifier (<code>_id</code> for collections, or derived primary key for tables) will be included automatically.</p>
-        <div id="metadata-keys-list">
-            <!-- Checkboxes for metadata keys will be populated here -->
-        </div>
-        <div>
-             <label for="tensor_name_override" style="margin-top: 1em;">Tensor Name (Optional Override):</label>
-             <input type="text" id="tensor_name_override" name="tensor_name_override" placeholder="Default: [Nickname]_[CollectionName]" style="width: 300px;">
-        </div>
-        <div class="form-group" style="margin-top: 1em;">
-            <label for="doc_limit_input">Document Limit (Optional):</label>
-            <input type="number" id="doc_limit_input" name="doc_limit" min="1" placeholder="Leave blank for all documents" style="width: 300px; padding: 0.5em;">
-            <small id="doc_limit_help_text" style="display: block; margin-top: 0.3em; color: #6c757d;">Specify the maximum number of documents to fetch and save.</small>
-        </div>
-
-        <!-- Sampling Strategy Selection -->
-        <div id="sampling-strategy-group" class="form-group" style="margin-top: 1em;">
-            <label>Sampling Strategy:</label>
-            <div>
-                <input type="radio" id="sampling_first_rows" name="sampling_strategy" value="first_rows" checked>
-                <label for="sampling_first_rows" style="display: inline; margin-top: 0;">First Rows (Default)</label>
+            <div class="form-group">
+                <label for="doc_limit_input">Document Limit (Optional):</label>
+                <input type="number" id="doc_limit_input" name="doc_limit" min="1" placeholder="Leave blank for all documents" class="mt-1">
+                <small id="doc_limit_help_text" class="help-text block">Specify the maximum number of documents to fetch and save.</small>
             </div>
-            <div id="token_range_option" class="hidden">
-                <input type="radio" id="sampling_token_range" name="sampling_strategy" value="token_range">
-                <label for="sampling_token_range" style="display: inline; margin-top: 0;">Token Range (Sample across partitions)</label>
-                <small style="display: block; margin-left: 20px; color: #6c757d;">Requires Document Limit. Fetches samples distributed across the token range.</small>
+
+            <!-- Sampling Strategy Selection -->
+            <div id="sampling-strategy-group" class="form-group">
+                <label class="font-medium">Sampling Strategy:</label>
+                <div class="radio-group mt-1">
+                    <input type="radio" id="sampling_first_rows" name="sampling_strategy" value="first_rows" checked class="form-radio h-4 w-4 text-indigo-600 transition duration-150 ease-in-out">
+                    <label for="sampling_first_rows">First Rows (Default)</label>
+                </div>
+                <div id="token_range_option" class="radio-group hidden mt-1">
+                    <input type="radio" id="sampling_token_range" name="sampling_strategy" value="token_range" class="form-radio h-4 w-4 text-indigo-600 transition duration-150 ease-in-out">
+                    <label for="sampling_token_range">Token Range (Sample across partitions)</label>
+                    <small class="help-text block ml-6">Requires Document Limit. Fetches samples distributed across the token range.</small>
+                </div>
+                <div id="distributed_option" class="radio-group hidden mt-1">
+                    <input type="radio" id="sampling_distributed" name="sampling_strategy" value="distributed" class="form-radio h-4 w-4 text-indigo-600 transition duration-150 ease-in-out">
+                    <label for="sampling_distributed">Distributed (Sample across collection)</label>
+                    <small class="help-text block ml-6">Requires Document Limit. Fetches samples distributed across the entire collection.</small>
+                </div>
             </div>
-            <div id="distributed_option" class="hidden">
-                <input type="radio" id="sampling_distributed" name="sampling_strategy" value="distributed">
-                <label for="sampling_distributed" style="display: inline; margin-top: 0;">Distributed (Sample across collection)</label>
-                <small style="display: block; margin-left: 20px; color: #6c757d;">Requires Document Limit. Fetches samples distributed across the entire collection.</small>
+
+            <button id="preview-docs-button" class="bg-yellow-500 hover:bg-yellow-700">Preview Sampled Documents</button>
+            <button id="generate-config-button" class="bg-green-500 hover:bg-green-700 ml-2 disabled:opacity-50 disabled:cursor-not-allowed" disabled>Generate Projector Config & Files</button>
+        </section>
+
+        <section id="sampling-preview-section" class="hidden mt-6">
+            <h2 class="config-section-title">Sample Data Preview</h2>
+            <div id="sample-data" class="p-3 border rounded bg-gray-50 min-h-[50px]">
+                <!-- Sample data preview will be shown here -->
             </div>
-        </div>
+        </section>
 
-        <button id="preview-docs-button" style="margin-top: 1em;">Preview Sampled Documents</button>
-        <button id="generate-config-button" disabled>Generate Projector Config & TSV</button>
-    </section>
+        <section id="config-section" class="hidden mt-6">
+            <h2 class="config-section-title">4. Generation Complete</h2>
+            <p>The server has saved the vector data, metadata, and updated the projector configuration file (`astra_data/astra_projector_config.json`). The following entry was added/updated:</p>
 
-    <section id="sampling-preview-section" class="hidden">
-        <h2>Sample Data Preview</h2>
-        <div id="sample-data">
-            <!-- Sample data preview will be shown here -->
-        </div>
-    </section>
+            <div class="form-group mt-4">
+                <label for="config-details-json">Tensor Entry Added/Updated in Config:</label>
+                <pre><code id="config-details-json" class="block whitespace-pre-wrap break-words"></code></pre>
+            </div>
 
-    <section id="config-section" class="hidden">
-        <h2>4. Generated Configuration & Metadata</h2>
-        <p>The server has saved the vector data, metadata, and updated the projector configuration file (`astra_data/astra_projector_config.json`). The following entry was added/updated:</p>
-        
-        <div>
-            <label for="config-details-json">Tensor Entry Added/Updated in Config:</label>
-            <pre><code id="config-details-json" style="display: block; white-space: pre-wrap; word-wrap: break-word; background-color: #f4f4f4; padding: 1em; border: 1px solid #ddd;"></code></pre>
-        </div>
+            <!-- Link will be appended here by JS, potentially styled with JS -->
+             <div id="projector-link-container" class="mt-4"></div>
+        </section>
 
-        <!-- Link will be appended here by JS -->
-    </section>
-
-    <hr>
-    <div id="results">Status: Waiting for connection details...</div>
-    <div id="error" class="hidden"></div>
+        <hr class="my-6">
+        <div id="results">Status: Waiting for connection details...</div>
+        <div id="error" class="hidden"></div>
+    </div>
 
     <script src="/static/js/astra_helper.js" defer></script>
 
