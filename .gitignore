@@ -3,3 +3,4 @@ check_dimensions.py
 extraction.csv
 load_data.py
 __pycache__
+file_data

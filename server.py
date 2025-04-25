@@ -1,7 +1,7 @@
 import os
 import uvicorn
-from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import FastAPI, Request, File, UploadFile, Form
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
@@ -16,8 +16,21 @@ from fastapi.responses import PlainTextResponse
 import numpy as np
 from astrapy.table import Table
 from astrapy.info import ColumnType, TableVectorColumnTypeDescriptor
-from typing import Literal
+from typing import Literal, List, Optional
 import data_fetcher # Import the new module
+import pandas as pd
+import io
+import ast # For literal_eval
+import random # For sampling
+import re # For splitting non-bracketed strings
+import csv # Need for quoting constants
+# import csv # Remove Sniffer import
+
+# Configure logging to show INFO messages
+logging.basicConfig(level=logging.INFO, format='%(levelname)s:%(name)s:%(message)s')
+
+# Configure logging to suppress python-multipart debug messages
+logging.getLogger('python-multipart').setLevel(logging.WARNING)
 
 # Server configuration settings
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -79,9 +92,18 @@ class SaveConfigRequest(BaseModel):
     partition_key_columns: list[str] | None = None
     sampling_strategy: Literal["first_rows", "token_range", "distributed"] = "first_rows"
 
+class FileProcessRequest(BaseModel):
+    filename: str 
+    tensorName: str
+    vectorColumnName: str 
+    selectedMetadataColumns: List[str] 
+    samplingStrategy: Literal["all", "first_n", "random_n"] = "all"
+    limit: Optional[int] = None
+
 # Global DataAPIClient cache
 astra_data_api_clients = {}
 
+# Pydantic models for file processing configuration
 def get_data_api_client(info: ConnectionInfo) -> Database:
     """Get or create a Database instance via DataAPIClient.
     
@@ -127,6 +149,12 @@ templates = Jinja2Templates(directory=TEMPLATES_DIR)
 async def get_astra_page(request: Request):
     """Serve the main HTML page for the Astra helper app."""
     return templates.TemplateResponse("astra.html", {"request": request})
+
+@app.get("/file", response_class=HTMLResponse, include_in_schema=False)
+@app.get("/file/", response_class=HTMLResponse)
+async def get_file_page(request: Request):
+    """Serve the main HTML page for file upload and processing."""
+    return templates.TemplateResponse("file.html", {"request": request})
 
 # API Routes
 @app.post("/api/astra/collections")
@@ -668,9 +696,6 @@ async def save_astra_data(request: SaveConfigRequest):
         except IOError as e:
              logging.error(f"IOError saving vector file {vector_file_path}: {e}")
              raise HTTPException(status_code=500, detail=f"Could not write vector file: {e}")
-        except Exception as e:
-            logging.exception(f"Unexpected error saving vector file {vector_file_path}")
-            raise HTTPException(status_code=500, detail=f"Unexpected error writing vector file: {str(e)}")
 
         # Save metadata
         logging.info(f"Attempting to save metadata for {len(metadata_rows)} documents to {metadata_file_path}")
@@ -742,19 +767,25 @@ async def save_astra_data(request: SaveConfigRequest):
              raise HTTPException(status_code=500, detail=f"Unexpected error writing config file: {str(e)}")
 
         # Return success response
-        config_relative_path = os.path.relpath(config_file_path, ROOT_DIR).replace('\\\\', '/')
-        logging.info(f"Returning config path relative to root: {config_relative_path}")
-        return {"message": f"Successfully saved data for tensor '{sanitized_tensor_name}' using '{request.sampling_strategy}' strategy",
-                "vector_file": os.path.basename(vector_file_path),
-                "metadata_file": os.path.basename(metadata_file_path),
-                "config_file": config_relative_path,
-                "vectors_saved": len(vectors),
-                "limit_applied": request.document_limit if request.sampling_strategy == 'token_range' or (request.document_limit and request.document_limit > 0) else None,
-                "tensor_name": sanitized_tensor_name,
-                "tensor_shape": [len(vectors), request.vector_dimension],
-                "tensor_path_rel": os.path.relpath(vector_file_path, ROOT_DIR).replace('\\\\', '/'),
-                "metadata_path_rel": os.path.relpath(metadata_file_path, ROOT_DIR).replace('\\\\', '/')
-                }
+        config_relative_url = os.path.relpath(config_file_path, ROOT_DIR).replace('\\', '/')
+        # Calculate relative paths for the response using the actual file paths
+        vector_response_path = os.path.relpath(vector_file_path, ROOT_DIR).replace('\\', '/')
+        metadata_response_path = os.path.relpath(metadata_file_path, ROOT_DIR).replace('\\', '/')
+        
+        logging.info(f"Processing successful. Config URL: {config_relative_url}")
+        return {
+            "message": f"Successfully saved data for tensor '{sanitized_tensor_name}' using '{request.sampling_strategy}' strategy",
+            "vector_file": os.path.basename(vector_file_path),
+            "metadata_file": os.path.basename(metadata_file_path),
+            "config_file": config_relative_url,
+            "vectors_saved": len(vectors),
+            "limit_applied": request.document_limit if request.sampling_strategy == 'token_range' or (request.document_limit and request.document_limit > 0) else None,
+            "tensor_name": sanitized_tensor_name,
+            "tensor_shape": [len(vectors), request.vector_dimension],
+            "tensor_path_rel": vector_response_path, # Use correct relative path
+            "metadata_path_rel": metadata_response_path, # Use correct relative path
+            "output_dir": os.path.relpath(local_astra_data_dir, ROOT_DIR).replace('\\', '/')
+        }
 
     except HTTPException as e:
         logging.error(f"HTTP Exception during save_astra_data: Status={e.status_code}, Detail='{e.detail}'")
@@ -770,6 +801,602 @@ async def save_astra_data(request: SaveConfigRequest):
     except Exception as e:
         logging.exception("Unexpected error during save_astra_data process")
         raise HTTPException(status_code=500, detail=f"An internal server error occurred. Check server logs for details.")
+
+# Helper function (Python) to parse potential vector - MORE CONSERVATIVE
+def python_parse_potential_vector(value):
+    if not isinstance(value, str): value = str(value) # Ensure string
+    value = value.strip()
+    if not value: return None
+
+    arr = None
+    is_bracketed = (value.startswith('[') and value.endswith(']')) or \
+                   (value.startswith('(') and value.endsWith(')'))
+
+    try:
+        if is_bracketed:
+            # Use literal_eval for bracketed strings
+            # Ensure content inside brackets is valid list content
+            content_to_eval = value[1:-1]
+            # Check if content looks reasonable before eval (e.g., only numbers, commas, spaces, dots, e, E, -, +)
+            if not re.fullmatch(r'[\d\s,\.\-eE\+]*', content_to_eval):
+                 return None # Contains disallowed characters
+            # Wrap in [] for literal_eval to ensure list context
+            evaluated = ast.literal_eval(f"[{content_to_eval}]") 
+            if isinstance(evaluated, list):
+                 arr = evaluated
+            else: return None # Must evaluate to a list
+        else:
+            # Non-bracketed: Must contain comma or space AND split into > 1 part
+            delimiter_pattern = None
+            if ',' in value:
+                delimiter_pattern = r'\s*,\s*' # Handle spaces around comma
+            elif ' ' in value:
+                 # Use regex for one or more spaces as delimiter
+                 # Check if it *only* contains numbers/delimiters first
+                 if not re.fullmatch(r'[\d\s\.\-eE\+]+(?<!\s)', value):
+                      return None # Contains non-numeric/non-space characters
+                 delimiter_pattern = r'\s+' 
+            
+            if delimiter_pattern is None: return None # Must have a delimiter
+
+            parts = [s.strip() for s in re.split(delimiter_pattern, value) if s.strip()]
+            
+            if len(parts) <= 1: return None # Must have multiple parts if not bracketed
+
+            # Try converting all parts to float - this must succeed for all
+            arr = [float(p) for p in parts]
+
+    except (ValueError, SyntaxError, TypeError):
+        # Handles float conversion errors, literal_eval errors, bad regex splits
+        return None 
+
+    # Final check: Ensure non-empty list of numbers
+    if isinstance(arr, list) and len(arr) > 0 and all(isinstance(x, (int, float)) for x in arr):
+         # Check length > 1 required if NOT originally bracketed
+         if len(arr) > 1 or is_bracketed:
+             return arr # Return the list of numbers
+             
+    return None
+
+@app.post("/api/file/upload")
+async def api_file_upload(file: UploadFile = File(...)):
+    """Handle file upload and detect header presence based on vector data in first row.
+    
+    The header detection logic works as follows:
+    1. Default assumption is no header (has_header = False)
+    2. Peek at first row to check for vector data
+    3. If vector data found in first row -> No header (data starts at row 1)
+    4. If no vector data in first row -> Header present (data starts at row 2)
+    5. If file empty or peek fails -> Default to no header
+    """
+    filename = file.filename
+    logging.info(f"Received file upload request: {filename}")
+    if not filename: raise HTTPException(status_code=400, detail="No file selected.")
+    _, extension = os.path.splitext(filename)
+    extension = extension.lower()
+
+    try:
+        contents = await file.read()
+        contents_stream = io.BytesIO(contents)
+        
+        has_header = False # Default to False unless proven otherwise
+        df_peek = None
+        # Define standard read options for CSV/TSV peek - read only the first row
+        csv_tsv_peek_opts = {
+            'nrows': 1, # Read only 1 row 
+            'header': None, # Don't assume header yet
+            'quotechar': '"',
+            'quoting': csv.QUOTE_MINIMAL 
+        }
+        
+        # --- Peek at first row --- 
+        try:
+            peek_stream = io.BytesIO(contents)
+            if extension == '.csv':
+                 df_peek = pd.read_csv(peek_stream, **csv_tsv_peek_opts)
+            elif extension == '.tsv':
+                 csv_tsv_peek_opts['sep'] = '\t'
+                 df_peek = pd.read_csv(peek_stream, **csv_tsv_peek_opts)
+            elif extension in ['.xls', '.xlsx']:
+                 engine = 'openpyxl' if extension == '.xlsx' else 'xlrd'
+                 df_peek = pd.read_excel(peek_stream, engine=engine, header=None, nrows=1) 
+            else:
+                 raise HTTPException(status_code=400, detail=f"Unsupported file type: {extension}")
+
+            # --- Apply Header Detection Heuristic --- 
+            if df_peek is not None and not df_peek.empty:
+                logging.debug("Header Detection - First Row Analysis:")
+                logging.debug(f"First row data: {df_peek.to_string()}")
+                
+                first_row = df_peek.iloc[0]
+                logging.debug("Checking first row for vector data:")
+                found_vector_in_first_row = False
+                for i, item in enumerate(first_row):
+                    item_str = str(item)
+                    parsed_vector = python_parse_potential_vector(item_str)
+                    vector_found_here = parsed_vector is not None
+                    logging.debug(f"  Column {i}: Value='{item_str[:100]}...', Is Vector: {vector_found_here}")
+                    if vector_found_here:
+                        found_vector_in_first_row = True
+                        break
+                
+                if found_vector_in_first_row:
+                    logging.info("Header Detection Result: Vector found in first row -> No header (data starts at row 1)")
+                    has_header = False # Vector in row 0 means it's data
+                else:
+                    logging.info("Header Detection Result: No vector in first row -> Header present (data starts at row 2)")
+                    has_header = True # No vector in row 0 means it's likely a header
+            else:
+                 logging.info("Header Detection Result: File empty or peek failed -> Defaulting to no header")
+                 has_header = False # Default to no header for empty/error 
+        
+        except Exception as peek_error:
+            logging.warning(f"Header Detection Error: {peek_error}. Defaulting to no header.")
+            has_header = False
+
+        # --- Re-read the full file with determined header setting --- 
+        logging.info(f"Reading full file with header setting: has_header = {has_header}")
+        contents_stream.seek(0) # Reset original stream
+        df = None
+        read_opts_full = {}
+        read_opts_full['header'] = 0 if has_header else None
+        # Apply quoting for final read of CSV/TSV as well
+        if extension in ['.csv', '.tsv']:
+             read_opts_full['quotechar'] = '"'
+             read_opts_full['quoting'] = csv.QUOTE_MINIMAL
+             if extension == '.tsv': read_opts_full['sep'] = '\t'
+        
+        try:
+            if extension == '.csv' or extension == '.tsv':
+                df = pd.read_csv(contents_stream, **read_opts_full)
+            elif extension in ['.xls', '.xlsx']:
+                # Excel doesn't have standard quoting like CSV, read normally
+                engine = 'openpyxl' if extension == '.xlsx' else 'xlrd'
+                df = pd.read_excel(contents_stream, engine=engine, header=read_opts_full['header'])
+        except Exception as read_error:
+             header_msg = "with assumed header" if has_header else "assuming no header"
+             logging.error(f"Error reading full file {header_msg}: {read_error}")
+             raise HTTPException(status_code=400, detail=f"Could not read file content {header_msg}. Error: {read_error}")
+
+        if df is None or df.empty:
+            raise HTTPException(status_code=400, detail="File is empty or could not be read correctly.")
+
+        if not has_header:
+            columns = [f"Column_{i+1}" for i in range(len(df.columns))]
+            df.columns = columns
+            logging.info(f"Applied generated default columns: {columns}")
+        else:
+            columns = df.columns.astype(str).tolist() 
+            logging.info(f"Using detected header columns: {columns}")
+
+        sample_data = df.head(10).to_dict(orient='records') 
+
+        logging.info(f"File upload analysis complete. Detected Header: {has_header}. Final Columns: {columns}")
+        return {
+            "filename": filename,
+            "columns": columns,
+            "has_header": has_header, 
+            "sample_data": sample_data
+        }
+
+    except Exception as e:
+        logging.exception(f"Error processing uploaded file '{filename}'")
+        raise HTTPException(status_code=500, detail=f"An error occurred processing the file: {str(e)}")
+
+@app.post("/api/file/process")
+async def api_file_process(config_json: str = Form(...), file: UploadFile = File(...)):
+    """Process uploaded file. Header detected via vector heuristic. Sampling applied."""
+    try:
+        config_dict = json.loads(config_json)
+        # Rename the validated request model to avoid shadowing
+        request_config = FileProcessRequest(**config_dict)
+        logging.info(f"Received file processing request for: {request_config.filename} with tensor name '{request_config.tensorName}'")
+        logging.info(f"Sampling Strategy: {request_config.samplingStrategy}, Limit: {request_config.limit}")
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid configuration format.")
+    except Exception as e: # Catch validation errors from Pydantic
+         logging.error(f"Configuration validation error: {e}")
+         # Improve Pydantic error reporting if possible
+         error_details = str(e)
+         try:
+             # Attempt to extract more specific Pydantic errors
+             if hasattr(e, 'errors') and callable(e.errors):
+                 error_details = ", ".join([f"'{err['loc'][0]}': {err['msg']}" for err in e.errors()])
+         except Exception: pass
+         raise HTTPException(status_code=422, detail=f"Invalid configuration data: {error_details}")
+
+    # Use request_config throughout for request details
+    if request_config.samplingStrategy in ["first_n", "random_n"] and (request_config.limit is None or request_config.limit <= 0):
+        raise HTTPException(status_code=422, detail=f"A positive limit is required for sampling strategy '{request_config.samplingStrategy}'.")
+    if request_config.samplingStrategy == "all" and request_config.limit is not None:
+        logging.warning("Limit provided but sampling strategy is 'all'. Limit will be ignored.")
+        request_config.limit = None 
+
+    filename = file.filename 
+    if not filename:
+         raise HTTPException(status_code=400, detail="File is missing in the process request.")
+
+    _, extension = os.path.splitext(filename)
+    extension = extension.lower()
+
+    try:
+        contents = await file.read()
+        
+        # --- Header Detection (Repeat logic from /upload) --- 
+        has_header = False 
+        try:
+            # Define peek options HERE
+            csv_tsv_peek_opts = {
+                'nrows': 1, 
+                'header': None, 
+                'quotechar': '"',
+                'quoting': csv.QUOTE_MINIMAL 
+            }
+            peek_stream = io.BytesIO(contents)
+            df_peek = None
+            if extension == '.csv':
+                 df_peek = pd.read_csv(peek_stream, **csv_tsv_peek_opts)
+            elif extension == '.tsv':
+                 csv_tsv_peek_opts['sep'] = '\t'
+                 df_peek = pd.read_csv(peek_stream, **csv_tsv_peek_opts)
+            elif extension in ['.xls', '.xlsx']:
+                 engine = 'openpyxl' if extension == '.xlsx' else 'xlrd'
+                 df_peek = pd.read_excel(peek_stream, engine=engine, header=None, nrows=1) 
+            else:
+                 raise HTTPException(status_code=400, detail=f"Unsupported file type: {extension}")
+
+            if df_peek is not None and not df_peek.empty:
+                first_row = df_peek.iloc[0]
+                found_vector_in_first_row = False
+                for i, item in enumerate(first_row):
+                    item_str = str(item)
+                    parsed_vector = python_parse_potential_vector(item_str)
+                    vector_found_here = parsed_vector is not None
+                    if vector_found_here:
+                        found_vector_in_first_row = True
+                        break
+                
+                if found_vector_in_first_row:
+                    logging.info("Heuristic Result: Found vector in first row -> No header (data starts at row 1)")
+                    has_header = False
+                else:
+                    logging.info("Heuristic Result: No vector in first row -> Header present (data starts at row 2)")
+                    has_header = True
+            else:
+                 logging.info("Heuristic Result: File empty or peek failed -> Defaulting to no header")
+                 has_header = False
+        except Exception as peek_error:
+            logging.warning(f"Error during header detection peek: {peek_error}. Defaulting to assuming NO header.")
+            has_header = False
+        logging.info(f"Processing Step Header Detection Result: has_header = {has_header}")
+        # --- End Header Detection --- 
+
+        # --- Read Full File --- 
+        file_stream = io.BytesIO(contents)
+        df = None
+        # Determine read options based on locally detected has_header
+        read_opts = {'header': 0 if has_header else None}
+        # Add quoting options for CSV/TSV
+        if extension in ['.csv', '.tsv']:
+             read_opts['quotechar'] = '"'
+             read_opts['quoting'] = csv.QUOTE_MINIMAL
+             if extension == '.tsv': read_opts['sep'] = '\t'
+             
+        logging.info(f"Reading full file with pandas using determined options: {read_opts}")
+        try:
+            if extension == '.csv' or extension == '.tsv':
+                df = pd.read_csv(file_stream, **read_opts)
+            elif extension in ['.xls', '.xlsx']:
+                # header option is part of read_opts
+                engine = 'openpyxl' if extension == '.xlsx' else 'xlrd'
+                df = pd.read_excel(file_stream, engine=engine, **read_opts)
+            else:
+                raise HTTPException(status_code=400, detail=f"Unsupported file type: {extension}")
+                
+            if df is None or df.empty:
+                 raise ValueError("File read resulted in an empty DataFrame.")
+                 
+            original_pandas_columns = df.columns.astype(str).tolist()
+            logging.info(f"Read {len(df)} rows {('with header' if has_header else 'without header')}. Columns: {original_pandas_columns}")
+
+        except Exception as read_error:
+             header_msg = "with assumed header" if has_header else "assuming no header"
+             logging.error(f"Error reading full file {header_msg}: {read_error}")
+             raise HTTPException(status_code=400, detail=f"Could not read file content {header_msg}. Error: {read_error}")
+
+        # --- Apply Sampling --- 
+        sampled_df = None # Initialize
+        if request_config.samplingStrategy == "first_n":
+            limit = min(request_config.limit, len(df))
+            sampled_slice = df.head(limit) 
+            sampled_df = sampled_slice.copy() # Explicitly create a copy
+            logging.info(f"Applied sampling: First {len(sampled_df)} rows (copied).")
+        elif request_config.samplingStrategy == "random_n":
+            limit = min(request_config.limit, len(df))
+            sampled_sample = df.sample(n=limit, random_state=42) 
+            sampled_df = sampled_sample.copy() # Explicitly create a copy
+            logging.info(f"Applied sampling: Random {len(sampled_df)} rows (copied).")
+        else: # "all"
+             sampled_df = df # No sampling, just use the original DataFrame
+             logging.info("No sampling applied (strategy: all).")
+
+        if sampled_df is None or sampled_df.empty: # Added check for None just in case
+            raise HTTPException(status_code=400, detail="No data remaining after sampling.")
+        
+        # --- Rename Columns AFTER Sampling (if no header detected) ---
+        final_user_columns = [request_config.vectorColumnName] + request_config.selectedMetadataColumns
+        
+        # New code to auto-detect which column contains vector data
+        if not has_header:
+            current_sampled_columns = sampled_df.columns.astype(str).tolist()
+            if len(final_user_columns) != len(current_sampled_columns):
+                logging.error(f"Column count mismatch after sampling. UI Config: {final_user_columns}. Sampled data cols: {current_sampled_columns}")
+                raise HTTPException(status_code=400, detail="Config Error: Column count mismatch.")
+            
+            # Auto-detect which column contains vector data
+            vector_col_index = -1
+            for idx, col in enumerate(current_sampled_columns):
+                # Check first row for vector-like data
+                sample_val = str(sampled_df.iloc[0, idx])
+                is_vector_like = sample_val.startswith('[') and sample_val.endswith(']') and ',' in sample_val
+                if is_vector_like:
+                    vector_col_index = idx
+                    logging.info(f"Auto-detected vector data in column index {vector_col_index} (value: {sample_val[:30]}...)")
+                    break
+            
+            if vector_col_index == -1:
+                logging.warning("Could not auto-detect vector column. Using first column as default.")
+                vector_col_index = 0
+            
+            # Create a list of column indices in the order we want them
+            column_order = [vector_col_index]  # Start with the vector column
+            for i in range(len(current_sampled_columns)):
+                if i != vector_col_index:
+                    column_order.append(i)
+            
+            logging.info(f"Reordering columns using index order: {column_order}")
+            
+            # Create new DataFrame with reordered columns
+            try:
+                # First reorder the columns by index
+                reordered_df = sampled_df.iloc[:, column_order]
+                
+                # Then rename the columns to the desired names
+                reordered_df.columns = final_user_columns
+                
+                # Replace the original DataFrame
+                sampled_df = reordered_df
+                
+                logging.info(f"Columns after reordering and renaming: {sampled_df.columns.tolist()}")
+            except Exception as rename_err:
+                logging.error(f"Error reordering and renaming columns: {rename_err}")
+                raise HTTPException(status_code=500, detail=f"Internal error during column reordering: {rename_err}")
+        
+        # --- Select and Validate Columns --- 
+        vector_col = request_config.vectorColumnName
+        metadata_cols = request_config.selectedMetadataColumns
+        available_cols_final = sampled_df.columns.astype(str).tolist()
+
+        missing_cols = [col for col in final_user_columns if col not in available_cols_final]
+        if missing_cols:
+             logging.error(f"Internal Error: Columns {missing_cols} not found after sampling and rename. Available: {available_cols_final}. Expected: {final_user_columns}")
+             raise HTTPException(status_code=500, detail=f"Internal processing error: Column mismatch after configuration.")
+
+        final_df = sampled_df[final_user_columns] 
+        logging.info(f"Processing with Vector Column: '{vector_col}', Metadata Columns: {metadata_cols}")
+
+        # --- Vector and Metadata Processing (using final_df) --- 
+        vectors = []
+        metadata_rows = []
+        metadata_header = metadata_cols 
+
+        logging.info(f"Processing {len(final_df)} documents. Vector key: '{vector_col}'. Metadata header: {metadata_header}")
+
+        processed_doc_count = 0
+        skipped_rows_parsing = 0 # Changed from skipped_vector_count for clarity
+        skipped_dimension_count = 0
+        expected_dimension = None # Moved initialization here
+        # skipped_pk_count = 0 # Removed, not relevant here
+
+        for index, row in final_df.iterrows():
+            vector_data = row[vector_col]
+            parsed_vector = None
+
+            # --- Robust Vector Parsing --- 
+            if isinstance(vector_data, str):
+                try:
+                    parsed_vector = ast.literal_eval(vector_data)
+                    if not isinstance(parsed_vector, list):
+                         parsed_vector = None 
+                except (ValueError, SyntaxError):
+                     try:
+                          vector_data_cleaned = vector_data.strip("[]() ")
+                          delimiter = ',' if ',' in vector_data_cleaned else ' '
+                          parts = [v.strip() for v in vector_data_cleaned.split(delimiter) if v.strip()] 
+                          if parts:
+                               parsed_vector = [float(p) for p in parts] 
+                          else:
+                               parsed_vector = None
+                     except ValueError:
+                          parsed_vector = None
+            elif isinstance(vector_data, (list, tuple)):
+                 try:
+                      parsed_vector = [float(item) for item in vector_data]
+                 except (ValueError, TypeError):
+                      parsed_vector = None 
+            elif isinstance(vector_data, np.ndarray):
+                parsed_vector = vector_data.tolist()
+            
+            if parsed_vector is None or not isinstance(parsed_vector, list):
+                logging.warning(f"Row index {index}: Could not parse vector data ('{vector_data}', type: {type(vector_data)}). Skipping.")
+                skipped_rows_parsing += 1
+                continue
+
+            # --- Convert to numpy and Check Dimension --- 
+            try:
+                 numeric_vector = [float(item) for item in parsed_vector] 
+                 np_vector = np.array(numeric_vector, dtype=np.float32)
+            except (ValueError, TypeError) as e:
+                 logging.warning(f"Row index {index}: Vector conversion failed ({e}). Vector: {parsed_vector}. Skipping.")
+                 skipped_rows_parsing += 1
+                 continue
+
+            current_dimension = len(np_vector)
+            if expected_dimension is None:
+                expected_dimension = current_dimension
+                if expected_dimension <= 0:
+                     logging.error(f"Row index {index}: Invalid vector dimension detected ({expected_dimension}). Skipping.")
+                     skipped_rows_parsing += 1 
+                     expected_dimension = None 
+                     continue
+                logging.info(f"Detected vector dimension: {expected_dimension}")
+            elif current_dimension != expected_dimension:
+                logging.warning(f"Row index {index}: Vector dimension mismatch ({current_dimension} vs expected {expected_dimension}). Skipping.")
+                skipped_dimension_count += 1
+                continue
+
+            vectors.append(np_vector)
+
+            # --- Build Metadata Row --- (Using metadata_header directly)
+            meta_row_data = []
+            for meta_col_name in metadata_header: # Use the simplified header
+                 value = row.get(meta_col_name, '')
+                 value_str = str(value).replace('\t', ' ').replace('\n', ' ').replace('\r', ' ')
+                 meta_row_data.append(value_str)
+            metadata_rows.append("\t".join(meta_row_data))
+            processed_doc_count += 1
+
+        logging.info(f"Processed {processed_doc_count} documents. Skipped: {skipped_rows_parsing} (parsing), {skipped_dimension_count} (dimension).") # Removed PK skip count
+
+        if not vectors or expected_dimension is None:
+            error_detail = "No valid vector data found after processing and validation."
+            if skipped_rows_parsing > 0 or skipped_dimension_count > 0:
+                 error_detail += f" Skipped rows breakdown: ParsingIssue={skipped_rows_parsing}, DimensionIssue={skipped_dimension_count}. Check vector format and column selection."
+            logging.error(error_detail)
+            raise HTTPException(status_code=400, detail=error_detail)
+
+        # --- Define Output Paths --- 
+        local_data_dir = os.path.join(ROOT_DIR, "file_data")
+        os.makedirs(local_data_dir, exist_ok=True)
+        logging.info(f"Using output directory: {local_data_dir}")
+
+        # Use tensor name from request, sanitize it
+        raw_tensor_name = request_config.tensorName
+        sanitized_tensor_name = raw_tensor_name.replace(" ", "_")
+        safe_tensor_name = "".join(c if c.isalnum() or c in ('_', '-') else '_' for c in sanitized_tensor_name)
+        if not safe_tensor_name:
+            safe_tensor_name = os.path.splitext(request_config.filename)[0].replace(" ", "_")
+            safe_tensor_name = "".join(c if c.isalnum() or c in ('_', '-') else '_' for c in safe_tensor_name)
+            if not safe_tensor_name: 
+                 safe_tensor_name = "uploaded_tensor"
+            logging.warning(f"Provided tensor name '{raw_tensor_name}' sanitized to empty or invalid. Using fallback: '{safe_tensor_name}'")
+        
+        logging.info(f"Using final safe tensor name: '{safe_tensor_name}'")
+        vector_file_path = os.path.join(local_data_dir, f"{safe_tensor_name}.bytes")
+        metadata_file_path = os.path.join(local_data_dir, f"{safe_tensor_name}_metadata.tsv")
+        config_file_path = os.path.join(local_data_dir, "file_projector_config.json") # Define config path here too
+
+        # --- Save Vector Data --- 
+        vector_data = np.array(vectors)
+        logging.info(f"Attempting to save {len(vectors)} vectors ({vector_data.nbytes} bytes) to {vector_file_path}")
+        try:
+            with open(vector_file_path, 'wb') as vf:
+                 vf.write(vector_data.tobytes())
+            logging.info(f"Successfully saved vectors to {vector_file_path}")
+        except IOError as e:
+             logging.error(f"IOError saving vector file {vector_file_path}: {e}")
+             raise HTTPException(status_code=500, detail=f"Could not write vector file: {e}")
+
+        # --- Save Metadata --- 
+        logging.info(f"Attempting to save metadata for {len(metadata_rows)} rows to {metadata_file_path}")
+        try:
+            with open(metadata_file_path, 'w', encoding='utf-8') as mf:
+                mf.write("\t".join(metadata_header) + "\n") # Use the simplified header
+                mf.write("\n".join(metadata_rows))
+            logging.info(f"Successfully saved metadata to {metadata_file_path}")
+        except IOError as e:
+             logging.error(f"IOError saving metadata file {metadata_file_path}: {e}")
+             raise HTTPException(status_code=500, detail=f"Could not write metadata file: {e}")
+
+        # --- Update Config File --- 
+        logging.info(f"Attempting to read and update config file: {config_file_path}")
+        # Use a different name for the loaded config dictionary
+        proj_config = {} 
+        if os.path.exists(config_file_path):
+            try:
+                with open(config_file_path, 'r', encoding='utf-8') as f:
+                    proj_config = json.load(f) # Load into proj_config
+                    if not isinstance(proj_config, dict):
+                         proj_config = {}
+            except Exception as e:
+                 logging.warning(f"Error reading config file {config_file_path}: {e}. Starting fresh.")
+                 proj_config = {}
+
+        if "embeddings" not in proj_config or not isinstance(proj_config.get("embeddings"), list):
+             proj_config["embeddings"] = []
+
+        # Create tensor entry using expected_dimension and safe_tensor_name
+        tensor_entry = {
+            "tensorName": safe_tensor_name, 
+            "tensorShape": [len(vectors), expected_dimension], 
+            "tensorPath": os.path.relpath(vector_file_path, ROOT_DIR).replace('\\', '/'),
+            "metadataPath": os.path.relpath(metadata_file_path, ROOT_DIR).replace('\\', '/')
+        }
+
+        # Update proj_config dictionary
+        found_index = -1
+        for i, entry in enumerate(proj_config["embeddings"]):
+            if isinstance(entry, dict) and entry.get("tensorName") == safe_tensor_name:
+                found_index = i
+                break
+        
+        if found_index != -1:
+             logging.info(f"Removing existing entry for tensor '{safe_tensor_name}' from index {found_index}.")
+             del proj_config["embeddings"][found_index]
+        
+        logging.info(f"Inserting entry for tensor '{safe_tensor_name}' at the beginning of the config list.")
+        proj_config["embeddings"].insert(0, tensor_entry)
+
+        # Save the updated proj_config dictionary
+        try:
+            with open(config_file_path, 'w', encoding='utf-8') as f:
+                json.dump(proj_config, f, indent=2)
+            logging.info(f"Successfully updated config file {config_file_path}")
+        except IOError as e:
+             logging.error(f"IOError writing updated config file {config_file_path}: {e}")
+             raise HTTPException(status_code=500, detail=f"Failed to write config file: {e}")
+        except Exception as e:
+             logging.exception(f"Unexpected error writing updated config file {config_file_path}")
+             raise HTTPException(status_code=500, detail=f"Unexpected error writing config file: {str(e)}")
+
+        # Return success response - use request_config for original filename
+        config_relative_url = os.path.relpath(config_file_path, ROOT_DIR).replace('\\', '/')
+        vector_response_path = os.path.relpath(vector_file_path, ROOT_DIR).replace('\\', '/')
+        metadata_response_path = os.path.relpath(metadata_file_path, ROOT_DIR).replace('\\', '/')
+        
+        logging.info(f"Processing successful. Config URL: {config_relative_url}")
+        return {
+            "message": f"Successfully processed '{request_config.filename}' ({processed_doc_count} rows saved).",
+            "projector_config_url": config_relative_url,
+            "tensor_name": safe_tensor_name,
+            "tensor_shape": [len(vectors), expected_dimension],
+            "tensor_path_rel": vector_response_path, 
+            "metadata_path_rel": metadata_response_path, 
+            "output_dir": os.path.relpath(local_data_dir, ROOT_DIR).replace('\\', '/')
+        }
+
+    except pd.errors.EmptyDataError:
+        logging.error(f"File '{filename}' is empty or became empty after read.")
+        raise HTTPException(status_code=400, detail="The uploaded file is empty.")
+    except HTTPException as e:
+        raise e # Reraise HTTP exceptions directly
+    except Exception as e:
+        logging.exception(f"Error processing file '{filename}' with configuration")
+        raise HTTPException(status_code=500, detail=f"An error occurred during file processing: {str(e)}")
+
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    return Response(status_code=204)
 
 # Setup Static Files
 if not os.path.exists(STATIC_DIR):

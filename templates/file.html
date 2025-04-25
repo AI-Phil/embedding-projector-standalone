@@ -1,0 +1,707 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Upload File for Embedding Projector</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <style>
+        /* Basic styles for consistency */
+        label { display: block; margin-top: 0.5em; margin-bottom: 0.2em; font-weight: 500;}
+        input[type="text"], input[type="number"] { 
+            padding: 0.5em;
+            border: 1px solid #ccc; 
+            border-radius: 0.375rem; /* rounded-md */
+            width: 100%;
+        }
+        button { 
+            padding: 0.7em 1.5em; 
+            margin-top: 1em; 
+            cursor: pointer; 
+            border-radius: 0.375rem; /* rounded-md */
+        }
+        .hidden { display: none; }
+        #error { margin-top: 1em; padding: 1em; border: 1px solid red; color: red; border-radius: 0.375rem; }
+        #results { margin-top: 1em; padding: 1em; border: 1px solid #ccc; border-radius: 0.375rem; background-color: #f9f9f9; }
+        pre { background-color: #f4f4f4; padding: 1em; border: 1px solid #ddd; overflow-x: auto; border-radius: 0.25rem; margin-top: 0.5em; }
+        table { border-collapse: collapse; width: 100%; }
+        th, td { padding: 8px; border-bottom: 1px solid #eee; text-align: left; vertical-align: top; }
+        thead th { border-bottom: 2px solid #ccc; background-color: #f8f8f8; }
+        .config-section-title { font-size: 1.25rem; font-weight: 600; margin-bottom: 1rem; }
+        .form-group { margin-bottom: 1rem; }
+        .radio-group label { display: inline-block; margin-left: 0.3em; margin-right: 1em; font-weight: normal; }
+        .radio-group input[type="radio"] { margin-right: 0.1em; }
+        .help-text { font-size: 0.875rem; color: #6c757d; margin-top: 0.25rem; margin-left: 1.5em; }
+    </style>
+</head>
+<body class="bg-gray-100 p-8">
+    <div class="max-w-5xl mx-auto bg-white p-6 rounded shadow">
+        <h1 class="text-2xl font-bold mb-6">Upload & Process Data File</h1>
+
+        <!-- Step 1: File Upload -->
+        <section id="upload-section">
+            <h2 class="config-section-title">1. Upload File</h2>
+            <div class="form-group">
+                <label for="fileInput">Choose file (CSV, TSV, XLS, XLSX):</label>
+                <input type="file" id="fileInput" name="file" accept=".csv,.tsv,.xls,.xlsx" class="mt-1 block w-full text-sm text-gray-500
+                    file:mr-4 file:py-2 file:px-4
+                    file:rounded-full file:border-0
+                    file:text-sm file:font-semibold
+                    file:bg-blue-50 file:text-blue-700
+                    hover:file:bg-blue-100
+                "/>
+                <p class="help-text">Processing will begin automatically after selecting a file.</p> 
+            </div>
+        </section>
+
+        <!-- Step 2: Configuration -->
+        <section id="config-section-ui" class="mt-6 hidden">
+            <h2 class="config-section-title">2. Configure Processing</h2>
+            
+            <!-- Data Preview -->
+            <div id="data-preview-container" class="mb-6">
+                 <h3 class="text-lg font-medium mb-2">Data Preview</h3>
+                 <div id="sample-data-table-container" class="overflow-x-auto mb-2"></div>
+                 <button id="show-more-rows-button" class="text-sm text-blue-600 hover:underline hidden">Show more rows...</button>
+            </div>
+            
+            <!-- Column Configuration Table -->
+            <div class="form-group">
+                 <label>Configure Columns:</label>
+                 <p class="text-sm text-gray-600 mb-2">Rename columns if necessary. Select columns to include as metadata and designate one vector column.</p>
+                 <div id="noHeaderWarning" class="text-sm text-red-600 bg-red-100 border border-red-300 rounded px-3 py-2 mb-3 hidden"></div>
+                 <div id="config-table-container" class="overflow-x-auto"></div>
+            </div>
+
+            <!-- Tensor Name -->
+             <div class="form-group">
+                 <label for="tensorNameInput">Tensor Name:</label>
+                 <input type="text" id="tensorNameInput" placeholder="Enter a name for this dataset">
+             </div>
+
+            <!-- Sampling Options -->
+             <div class="form-group">
+                 <label>Sampling Strategy:</label>
+                 <div class="radio-group">
+                     <input type="radio" id="sampling_all" name="sampling_strategy" value="all" checked>
+                     <label for="sampling_all">All Rows</label>
+                     
+                     <input type="radio" id="sampling_first_n" name="sampling_strategy" value="first_n">
+                     <label for="sampling_first_n">First N Rows</label>
+                     
+                     <input type="radio" id="sampling_random_n" name="sampling_strategy" value="random_n">
+                     <label for="sampling_random_n">Random N Rows</label>
+                 </div>
+             </div>
+             <div class="form-group">
+                 <label for="limitInput">Row Limit (required for First N / Random N):</label>
+                 <input type="number" id="limitInput" placeholder="e.g., 1000" min="1">
+                 <p id="limitHelpText" class="help-text"></p>
+             </div>
+
+            <!-- Action Button -->
+            <button id="generateButton" onclick="generateProjectorFiles()" class="w-full bg-green-500 hover:bg-green-700 text-white font-bold disabled:opacity-50 disabled:cursor-not-allowed" disabled>
+                Generate Projector Files
+            </button>
+        </section>
+        
+        <!-- Step 3: Results -->
+        <section id="results-section" class="mt-6 hidden">
+            <h2 class="config-section-title">3. Generation Complete</h2>
+            <p>The server has processed the file and saved the vector data, metadata, and configuration file.</p>
+            <div>
+                <label>Tensor Entry Added/Updated in Config:</label>
+                <pre><code id="config-details-json" style="display: block; white-space: pre-wrap; word-wrap: break-word;"></code></pre>
+            </div>
+            <!-- Link added dynamically -->
+        </section>
+        
+        <!-- Status/Error Area -->
+        <hr class="my-6">
+        <div id="results">Status: Waiting for file selection...</div>
+        <div id="error" class="hidden"></div>
+    </div>
+
+    <script>
+        let uploadedFileData = null; // Stores { filename, columns, has_header, sample_data }
+        let originalColumnNames = []; // Store initially detected/generated names
+
+        // --- DOM Elements ---
+        const uploadSection = document.getElementById('upload-section');
+        const configSectionUI = document.getElementById('config-section-ui');
+        const resultsSection = document.getElementById('results-section');
+        const fileInput = document.getElementById('fileInput');
+        const sampleDataTableContainer = document.getElementById('sample-data-table-container');
+        const showMoreRowsButton = document.getElementById('show-more-rows-button');
+        const configTableContainer = document.getElementById('config-table-container');
+        const tensorNameInput = document.getElementById('tensorNameInput');
+        const limitInput = document.getElementById('limitInput');
+        const limitHelpText = document.getElementById('limitHelpText');
+        const generateButton = document.getElementById('generateButton');
+        const configDetailsJson = document.getElementById('config-details-json');
+        const resultsDiv = document.getElementById('results');
+        const errorDiv = document.getElementById('error');
+        const noHeaderWarningDiv = document.getElementById('noHeaderWarning');
+
+        // --- Helper Functions ---
+        function showError(message) {
+            console.error('Error:', message);
+            errorDiv.textContent = message;
+            errorDiv.classList.remove('hidden');
+            resultsDiv.textContent = 'Error occurred.';
+            generateButton.disabled = false; // Re-enable button on error
+        }
+
+        function showStatus(message) {
+            console.log('Status:', message);
+            resultsDiv.textContent = message;
+            errorDiv.classList.add('hidden');
+        }
+
+        function resetUI() {
+            console.log('Resetting UI state...');
+            configSectionUI.classList.add('hidden');
+            resultsSection.classList.add('hidden');
+            generateButton.disabled = true;
+            sampleDataTableContainer.innerHTML = '';
+            configTableContainer.innerHTML = '';
+            showMoreRowsButton.classList.add('hidden');
+            tensorNameInput.value = '';
+            limitInput.value = '';
+            document.getElementById('sampling_all').checked = true;
+            limitHelpText.textContent = '';
+            uploadedFileData = null;
+            originalColumnNames = [];
+        }
+
+        // --- Event Handlers ---
+        async function uploadFile() {
+            console.log('Starting file upload process...');
+            resetUI(); 
+            showStatus('Uploading and analyzing file...');
+
+            const file = fileInput.files[0];
+            if (!file) {
+                showError('Please select a file.');
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('file', file);
+
+            try {
+                console.log('Sending file to server for analysis...');
+                const response = await fetch('/api/file/upload', {
+                    method: 'POST',
+                    body: formData,
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json().catch(() => ({ detail: 'File upload failed with status ' + response.status }));
+                    throw new Error(errorData.detail || 'File upload failed');
+                }
+
+                uploadedFileData = await response.json(); 
+                originalColumnNames = [...uploadedFileData.columns];
+                console.log('File analysis complete:', {
+                    filename: uploadedFileData.filename,
+                    hasHeader: uploadedFileData.has_header,
+                    columnCount: uploadedFileData.columns.length
+                });
+                
+                displayConfigurationUI(uploadedFileData);
+                showStatus('File analyzed. Please configure processing options.');
+                configSectionUI.classList.remove('hidden');
+
+            } catch (error) {
+                console.error('Upload error:', error);
+                showError('Error uploading or analyzing file: ' + error.message);
+                resetUI();
+            }
+        }
+        
+        function displayConfigurationUI(data) {
+            console.log('Displaying configuration UI with data:', {
+                filename: data.filename,
+                hasHeader: data.has_header,
+                columnCount: data.columns.length
+            });
+            
+            // 1. Display Sample Data Preview
+            displaySamplePreview(data.sample_data, data.columns);
+            
+            // 2. Create Column Configuration Table
+            createConfigTable(data.columns, data.has_header);
+            updateNoHeaderWarning(data.has_header);
+
+            // 3. Set Default Tensor Name
+            const baseName = data.filename.substring(0, data.filename.lastIndexOf('.')) || data.filename;
+            tensorNameInput.value = baseName.replace(/[^a-zA-Z0-9_\-]/g, '_'); 
+            
+            // 4. Reset sampling inputs
+            document.getElementById('sampling_all').checked = true;
+            limitInput.value = '';
+            limitHelpText.textContent = ''; 
+
+            // 5. Set initial generate button state
+            const vectorSelected = document.querySelector('input[name="vectorColumnChoice"]:checked');
+            generateButton.disabled = !vectorSelected;
+        }
+        
+        // Helper function to parse string to potential vector (numeric array)
+        function parsePotentialVector(value) {
+            if (typeof value !== 'string' || value.trim() === '') return null;
+            
+            const trimmedValue = value.trim();
+            let looksLikeVector = false;
+            let potentialDelimiters = [',', ' ', '\t']; // Common delimiters
+            
+            // Check for brackets/parentheses or common delimiters
+            if ((trimmedValue.startsWith('[') && trimmedValue.endsWith(']')) || 
+                (trimmedValue.startsWith('(') && trimmedValue.endsWith(')'))) {
+                looksLikeVector = true;
+            } else {
+                // Check if it contains likely delimiters *between* potential numbers
+                for (const delim of potentialDelimiters) {
+                    const parts = trimmedValue.split(delim).map(s => s.trim()).filter(s => s !== '');
+                    if (parts.length > 1) {
+                        looksLikeVector = true;
+                        break;
+                    }
+                }
+            }
+
+            if (!looksLikeVector) return null;
+
+            let arr = null;
+            try {
+                if (trimmedValue.startsWith('[') && trimmedValue.endsWith(']')) {
+                    arr = JSON.parse(trimmedValue);
+                } else {
+                    const cleaned = trimmedValue.replace(/^[\(\[]|[\]\)]$/g, '').trim();
+                    const delimiter = cleaned.includes(',') ? ',' : /\s+/;
+                    arr = cleaned.split(delimiter).map(s => s.trim()).filter(s => s !== '');
+                }
+            } catch (e) {
+                console.debug('Vector parsing failed:', e);
+                return null;
+            }
+
+            if (!Array.isArray(arr) || arr.length === 0) return null;
+            
+            if (arr.length === 1 && !(trimmedValue.startsWith('[') && trimmedValue.endsWith(']')) && 
+                !(trimmedValue.startsWith('(') && trimmedValue.endsWith(')'))) { 
+                return null; 
+            }
+
+            const numericArr = [];
+            for (const item of arr) {
+                const num = Number(item);
+                if (isNaN(num)) return null;
+                numericArr.push(num);
+            }
+            return numericArr;
+        }
+
+        // Helper function to format vector preview
+        function formatVectorPreview(vector) {
+            if (!vector || vector.length === 0) return '';
+            const dim = vector.length;
+            let preview = '';
+            if (dim <= 5) {
+                preview = vector.map(v => v.toFixed ? v.toFixed(3) : String(v)).join(', ');
+            } else {
+                preview = `${vector[0].toFixed ? vector[0].toFixed(3) : String(vector[0])}, ${vector[1].toFixed ? vector[1].toFixed(3) : String(vector[1])}, ..., ${vector[dim-1].toFixed ? vector[dim-1].toFixed(3) : String(vector[dim-1])}`;
+            }
+            return `[${preview}] (Dim: ${dim})`;
+        }
+
+        function displaySamplePreview(sampleData, columns) {
+            console.log('Displaying sample preview:', {
+                rowCount: sampleData.length,
+                columnCount: columns.length
+            });
+            
+            sampleDataTableContainer.innerHTML = '';
+            showMoreRowsButton.classList.add('hidden');
+            if (!sampleData || sampleData.length === 0) {
+                sampleDataTableContainer.textContent = 'No preview data available.';
+                return;
+            }
+
+            const table = document.createElement('table');
+            table.className = 'table-auto w-full text-sm text-left text-gray-500';
+            table.id = 'sampleDataTable'; 
+            const thead = table.createTHead();
+            thead.className = 'text-xs text-gray-700 uppercase bg-gray-50';
+            const headerRow = thead.insertRow();
+            columns.forEach(colName => {
+                const th = document.createElement('th');
+                th.scope = 'col';
+                th.className = 'px-4 py-2 whitespace-nowrap';
+                th.textContent = colName;
+                headerRow.appendChild(th);
+            });
+
+            const tbody = table.createTBody();
+            // Add only the first row initially
+            const firstRowData = sampleData[0];
+            const trFirst = tbody.insertRow();
+            trFirst.className = 'bg-white border-b';
+            columns.forEach(colName => {
+                const td = trFirst.insertCell();
+                td.className = 'px-4 py-2';
+                const value = firstRowData[colName];
+                const vector = parsePotentialVector(value);
+                td.textContent = vector ? formatVectorPreview(vector) : (value !== null && value !== undefined ? String(value) : '');
+                if (vector) td.title = String(value);
+            });
+
+            sampleDataTableContainer.appendChild(table);
+
+            if (sampleData.length > 1) {
+                showMoreRowsButton.textContent = `Show ${Math.min(sampleData.length -1, 9)} more rows...`;
+                showMoreRowsButton.classList.remove('hidden');
+                showMoreRowsButton.replaceWith(showMoreRowsButton.cloneNode(true)); 
+                document.getElementById('show-more-rows-button').addEventListener('click', () => {
+                    showMoreSampleRows(sampleData, columns);
+                });
+            } 
+        }
+
+        function showMoreSampleRows(sampleData, columns) {
+            console.log('Showing additional sample rows...');
+            const sampleTable = document.getElementById('sampleDataTable');
+            const sampleBody = sampleTable.tBodies[0];
+            for (let i = 1; i < Math.min(sampleData.length, 10); i++) {
+                const rowData = sampleData[i];
+                const tr = sampleBody.insertRow();
+                tr.className = 'bg-white border-b';
+                columns.forEach(colName => {
+                    const td = tr.insertCell();
+                    td.className = 'px-4 py-2';
+                    const value = rowData[colName];
+                    const vector = parsePotentialVector(value);
+                    td.textContent = vector ? formatVectorPreview(vector) : (value !== null && value !== undefined ? String(value) : '');
+                    if (vector) td.title = String(value);
+                });
+            }
+            document.getElementById('data-preview-container').querySelector('h3').textContent = `Data Preview (First ${Math.min(sampleData.length, 10)} Rows)`;
+            document.getElementById('show-more-rows-button').classList.add('hidden');
+        }
+        
+        function createConfigTable(columns, hasHeader) {
+            console.log('Creating configuration table:', {
+                columnCount: columns.length,
+                hasHeader: hasHeader
+            });
+            
+            configTableContainer.innerHTML = '';
+            const table = document.createElement('table');
+            table.id = 'configTable';
+            const thead = table.createTHead();
+            const headerRow = thead.insertRow();
+            ['Column Name', 'Include Metadata', 'Vector'].forEach(headerText => {
+                const th = document.createElement('th');
+                th.textContent = headerText;
+                headerRow.appendChild(th);
+            });
+ 
+            const tbody = table.createTBody();
+            let bestVectorGuessIndex = -1;
+            let maxVectorLength = 0;
+
+            // --- Vector Guessing Logic ---
+            const firstSampleRow = uploadedFileData?.sample_data?.[0];
+            if (firstSampleRow) {
+                columns.forEach((colName, index) => {
+                    const originalColName = uploadedFileData.columns[index]; 
+                    const value = firstSampleRow[originalColName];
+                    const vector = parsePotentialVector(value);
+                    if (vector && vector.length > maxVectorLength) {
+                        maxVectorLength = vector.length;
+                        bestVectorGuessIndex = index;
+                    }
+                });
+            }
+            console.log(`Vector guess result: Index ${bestVectorGuessIndex} (Length: ${maxVectorLength})`);
+
+            columns.forEach((originalColName, index) => {
+                const tr = tbody.insertRow();
+                tr.dataset.originalIndex = index;
+                tr.dataset.originalName = originalColName; 
+ 
+                // Column Name (Input if no header, Span if header)
+                const tdName = tr.insertCell();
+                const effectiveColName = hasHeader ? originalColName : `Column_${index + 1}`;
+                if (!hasHeader) {
+                    const input = document.createElement('input');
+                    input.type = 'text';
+                    input.value = effectiveColName; 
+                    input.className = 'mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-300 focus:ring focus:ring-indigo-200 focus:ring-opacity-50 text-sm';
+                    input.dataset.role = 'column-name';
+                    tdName.appendChild(input);
+                } else {
+                    const span = document.createElement('span');
+                    span.textContent = effectiveColName;
+                    span.dataset.role = 'column-name';
+                    tdName.appendChild(span);
+                }
+ 
+                // Include Metadata Checkbox
+                const tdMeta = tr.insertCell();
+                tdMeta.className = 'text-center';
+                const metaCheckbox = document.createElement('input');
+                metaCheckbox.type = 'checkbox';
+                metaCheckbox.dataset.role = 'metadata-checkbox';
+                metaCheckbox.checked = (index !== bestVectorGuessIndex);
+                metaCheckbox.disabled = (index === bestVectorGuessIndex);
+                metaCheckbox.className = 'rounded border-gray-300 text-indigo-600 shadow-sm focus:border-indigo-300 focus:ring focus:ring-offset-0 focus:ring-indigo-200 focus:ring-opacity-50 h-4 w-4';
+                tdMeta.appendChild(metaCheckbox);
+ 
+                // Vector Radio Button
+                const tdVector = tr.insertCell();
+                tdVector.className = 'text-center';
+                const vectorRadio = document.createElement('input');
+                vectorRadio.type = 'radio';
+                vectorRadio.name = 'vectorColumnChoice';
+                vectorRadio.value = index; 
+                vectorRadio.dataset.role = 'vector-radio';
+                vectorRadio.checked = (index === bestVectorGuessIndex);
+                vectorRadio.className = 'rounded-full border-gray-300 text-indigo-600 shadow-sm focus:border-indigo-300 focus:ring focus:ring-offset-0 focus:ring-indigo-200 focus:ring-opacity-50 h-4 w-4';
+                tdVector.appendChild(vectorRadio);
+            });
+            configTableContainer.appendChild(table);
+            
+            tbody.removeEventListener('change', handleConfigChange); 
+            tbody.addEventListener('change', handleConfigChange);
+            
+            generateButton.disabled = (bestVectorGuessIndex === -1);
+        }
+        
+        function updateNoHeaderWarning(hasHeader) {
+            console.log('Updating no-header warning:', { hasHeader });
+            if (!hasHeader) {
+                noHeaderWarningDiv.textContent = 'No header row was detected (based on vector check). Please review and rename the generated column names (Column_1, Column_2, etc.) below.';
+                noHeaderWarningDiv.classList.remove('hidden');
+            } else {
+                noHeaderWarningDiv.classList.add('hidden');
+            }
+        }
+
+        function handleConfigChange(event) {
+            console.log('Configuration change detected:', {
+                target: event.target.dataset.role,
+                checked: event.target.checked
+            });
+            
+            const vectorSelected = document.querySelector('input[name="vectorColumnChoice"]:checked');
+            generateButton.disabled = !vectorSelected;
+ 
+            if (event.target.dataset.role === 'vector-radio' && event.target.checked) {
+                const row = event.target.closest('tr');
+                const metaCheckbox = row.querySelector('input[data-role="metadata-checkbox"]');
+                if (metaCheckbox) {
+                    metaCheckbox.checked = false;
+                    metaCheckbox.disabled = true;
+                }
+                const allRows = event.target.closest('tbody').querySelectorAll('tr');
+                allRows.forEach(r => {
+                    if (r !== row) {
+                        const otherMetaCheckbox = r.querySelector('input[data-role="metadata-checkbox"]');
+                        if (otherMetaCheckbox) {
+                            otherMetaCheckbox.disabled = false;
+                        }
+                    }
+                });
+            }
+            
+            resultsSection.classList.add('hidden');
+            showStatus('Configuration changed. Click "Generate Projector Files" to process with new settings.');
+            generateButton.disabled = false;
+        }
+
+        function setupConfigChangeListeners() {
+            tensorNameInput.addEventListener('input', () => {
+                resultsSection.classList.add('hidden');
+                showStatus('Configuration changed. Click "Generate Projector Files" to process with new settings.');
+                generateButton.disabled = false;
+            });
+
+            document.querySelectorAll('input[name="sampling_strategy"]').forEach(radio => {
+                radio.addEventListener('change', () => {
+                    resultsSection.classList.add('hidden');
+                    showStatus('Configuration changed. Click "Generate Projector Files" to process with new settings.');
+                    generateButton.disabled = false;
+                });
+            });
+
+            limitInput.addEventListener('input', () => {
+                resultsSection.classList.add('hidden');
+                showStatus('Configuration changed. Click "Generate Projector Files" to process with new settings.');
+                generateButton.disabled = false;
+            });
+
+            document.querySelectorAll('input[data-role="column-name"]').forEach(input => {
+                input.addEventListener('input', () => {
+                    resultsSection.classList.add('hidden');
+                    showStatus('Configuration changed. Click "Generate Projector Files" to process with new settings.');
+                    generateButton.disabled = false;
+                });
+            });
+        }
+
+        async function generateProjectorFiles() {
+            console.log('Starting projector file generation...');
+            if (!uploadedFileData) {
+                showError('No file data available. Please upload a file first.');
+                return;
+            }
+
+            const tensorName = tensorNameInput.value.trim();
+            const samplingStrategy = document.querySelector('input[name="sampling_strategy"]:checked').value;
+            const limit = limitInput.value ? parseInt(limitInput.value, 10) : null;
+            
+            let vectorColumnName = null;
+            const selectedMetadataColumns = [];
+            const configRows = document.querySelectorAll('#configTable tbody tr');
+            let vectorRadioSelected = null;
+
+            configRows.forEach(row => {
+                const nameElement = row.querySelector('[data-role="column-name"]');
+                const currentName = nameElement.tagName === 'INPUT' ? nameElement.value.trim() : nameElement.textContent;
+                const metaCheckbox = row.querySelector('input[data-role="metadata-checkbox"]');
+                const vectorRadio = row.querySelector('input[data-role="vector-radio"]');
+
+                if (vectorRadio.checked) {
+                    vectorColumnName = currentName;
+                    vectorRadioSelected = vectorRadio;
+                } else if (metaCheckbox.checked) {
+                    selectedMetadataColumns.push(currentName);
+                }
+            });
+
+            console.log('Configuration gathered:', {
+                tensorName,
+                samplingStrategy,
+                limit,
+                vectorColumnName,
+                metadataColumns: selectedMetadataColumns
+            });
+
+            if (!tensorName) {
+                showError('Please provide a Tensor Name.');
+                return;
+            }
+            if (!/^[a-zA-Z0-9_\-]+$/.test(tensorName)) {
+                showError('Tensor Name can only contain letters, numbers, underscores, and hyphens.');
+                return;
+            }
+            if (!vectorRadioSelected) {
+                showError('Please select a Vector column.');
+                return;
+            }
+            if (samplingStrategy !== 'all' && (!limit || limit <= 0)) {
+                showError(`A positive Row Limit is required for sampling strategy: ${samplingStrategy}`);
+                return;
+            }
+
+            const finalConfig = {
+                filename: uploadedFileData.filename,
+                tensorName: tensorName,
+                vectorColumnName: vectorColumnName,
+                selectedMetadataColumns: selectedMetadataColumns,
+                samplingStrategy: samplingStrategy,
+                limit: limit
+            };
+
+            console.log('Sending processing request with config:', finalConfig);
+
+            const file = fileInput.files[0];
+            if (!file) {
+                showError('Original file not found. Please re-upload.');
+                resetUI();
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('config_json', JSON.stringify(finalConfig));
+            formData.append('file', file);
+
+            showStatus('Processing file and generating data...');
+            generateButton.disabled = true;
+
+            try {
+                const response = await fetch('/api/file/process', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json().catch(() => ({ detail: 'Processing failed with status ' + response.status }));
+                    let detailMessage = errorData.detail || 'Unknown processing error';
+                    if (typeof detailMessage === 'object' && detailMessage.msg) {
+                        detailMessage = detailMessage.msg;
+                    }
+                    throw new Error(detailMessage);
+                }
+                
+                const result = await response.json();
+                console.log('Processing complete:', result);
+                displayResults(result); 
+                resultsSection.classList.remove('hidden');
+                showStatus(result.message || 'Processing complete.');
+                generateButton.disabled = false;
+
+            } catch (error) {
+                console.error('Processing error:', error);
+                showError('Error processing file: ' + error.message);
+                generateButton.disabled = false;
+            }
+        }
+        
+        function displayResults(result) {
+            console.log('Displaying results:', result);
+            configDetailsJson.textContent = '';
+            const existingLink = resultsSection.querySelector('a.projector-link');
+            if (existingLink) existingLink.remove();
+
+            if (!result) return;
+             
+            const tensorEntry = {
+                tensorName: result.tensor_name,
+                tensorShape: result.tensor_shape,
+                tensorPath: result.tensor_path_rel,
+                metadataPath: result.metadata_path_rel
+            };
+            configDetailsJson.textContent = JSON.stringify(tensorEntry, null, 2);
+
+            if (result.projector_config_url) {
+                const projectorLink = document.createElement('a');
+                const params = new URLSearchParams();
+                params.set('config', result.projector_config_url);
+                projectorLink.href = `/?${params.toString()}`;
+                projectorLink.textContent = 'View in Embedding Projector';
+                projectorLink.target = '_blank';
+                projectorLink.className = 'projector-link'; 
+                projectorLink.style.display = 'block';
+                projectorLink.style.marginTop = '1em';
+                projectorLink.style.fontWeight = 'bold';
+                configDetailsJson.parentNode.parentNode.appendChild(projectorLink);
+            }
+        }
+
+        // --- Initialization ---
+        fileInput.addEventListener('change', uploadFile);
+        
+        limitInput.addEventListener('input', () => {
+            if (limitInput.value && limitInput.value > 0) {
+                document.getElementById('sampling_first_n').checked = true;
+            }
+        });
+
+        // Set up configuration change listeners
+        setupConfigChangeListeners();
+    </script>
+</body>
+</html>
