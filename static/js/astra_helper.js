@@ -607,17 +607,58 @@ function populateMetadataKeys(keys, sampleData, isTable = false, vectorColName =
 
     if (keysForSelection.length === 0) {
         metadataKeysListDiv.innerHTML = '<p>No additional metadata fields found in sample data (excluding vector column).</p>';
+        return;
     }
 
+    // Create table element
+    const table = document.createElement('table');
+    table.style.width = '100%';
+    table.style.borderCollapse = 'collapse';
+    table.style.marginTop = '10px';
+
+    // Create table header
+    const thead = table.createTHead();
+    const headerRow = thead.insertRow();
+    
+    const th1 = document.createElement('th');
+    th1.textContent = 'Field';
+    th1.style.textAlign = 'left';
+    th1.style.borderBottom = '1px solid #ccc';
+    th1.style.padding = '8px';
+    headerRow.appendChild(th1);
+
+    const th2 = document.createElement('th');
+    th2.textContent = 'Preview Value';
+    th2.style.textAlign = 'left';
+    th2.style.borderBottom = '1px solid #ccc';
+    th2.style.padding = '8px';
+    headerRow.appendChild(th2);
+
+    const tbody = table.createTBody();
+
+    // Get first document for preview values
+    const firstDoc = sampleData && sampleData.length > 0 ? sampleData[0] : null;
+
     keysForSelection.forEach(key => {
+        const row = tbody.insertRow();
+        row.style.borderBottom = '1px solid #eee';
+
+        // Create checkbox cell
+        const cell1 = row.insertCell();
+        cell1.style.padding = '8px';
+        cell1.style.verticalAlign = 'top';
+        cell1.style.display = 'flex';
+        cell1.style.alignItems = 'center';
+        cell1.style.gap = '6px';
+
         const checkbox = document.createElement('input');
         checkbox.type = 'checkbox';
         checkbox.id = `meta-${key}`;
         checkbox.name = 'metadata_keys';
         checkbox.value = key;
+        checkbox.style.margin = '0';
 
         let shouldCheckByDefault = false;
-        const firstDoc = (sampleData && sampleData.length > 0) ? sampleData[0] : null;
         if (firstDoc && firstDoc.hasOwnProperty(key)) {
             const value = firstDoc[key];
             const valueType = typeof value;
@@ -633,16 +674,45 @@ function populateMetadataKeys(keys, sampleData, isTable = false, vectorColName =
         const label = document.createElement('label');
         label.htmlFor = `meta-${key}`;
         label.textContent = key;
-        label.style.display = 'inline-block';
-        label.style.marginLeft = '0.5em';
-        label.style.marginRight = '1.5em';
+        label.style.margin = '0';
+        label.style.whiteSpace = 'nowrap';
+        label.style.display = 'flex';
+        label.style.alignItems = 'center';
 
-        const div = document.createElement('div');
-        div.appendChild(checkbox);
-        div.appendChild(label);
-        metadataKeysListDiv.appendChild(div);
+        cell1.appendChild(checkbox);
+        cell1.appendChild(label);
+
+        // Create preview value cell
+        const cell2 = row.insertCell();
+        cell2.style.padding = '8px';
+        cell2.style.verticalAlign = 'top';
+        cell2.style.maxWidth = '300px';
+        cell2.style.overflow = 'hidden';
+        cell2.style.textOverflow = 'ellipsis';
+        cell2.style.whiteSpace = 'nowrap';
+
+        if (firstDoc && firstDoc.hasOwnProperty(key)) {
+            const value = firstDoc[key];
+            let displayValue = value;
+            
+            if (Array.isArray(value)) {
+                displayValue = `[${value.slice(0, 3).join(', ')}${value.length > 3 ? ', ...' : ''}]`;
+            } else if (typeof value === 'object' && value !== null) {
+                displayValue = JSON.stringify(value);
+                if (displayValue.length > 50) {
+                    displayValue = displayValue.substring(0, 47) + '...';
+                }
+            } else if (typeof value === 'string' && value.length > 50) {
+                displayValue = value.substring(0, 47) + '...';
+            }
+            
+            cell2.textContent = displayValue;
+        } else {
+            cell2.textContent = '(No value)';
+        }
     });
 
+    metadataKeysListDiv.appendChild(table);
     generateConfigButton.disabled = false;
 }
 
