@@ -107,6 +107,22 @@
             <input type="number" id="doc_limit_input" name="doc_limit" min="1" placeholder="Leave blank for all documents" style="width: 300px; padding: 0.5em;">
             <small id="doc_limit_help_text" style="display: block; margin-top: 0.3em; color: #6c757d;">Specify the maximum number of documents to fetch and save.</small>
         </div>
+
+        <!-- Added Sampling Strategy Selection (Table Mode Only) -->
+        <div id="sampling-strategy-group" class="form-group hidden" style="margin-top: 1em;">
+            <label>Sampling Strategy (for Tables):</label>
+            <div>
+                <input type="radio" id="sampling_first_rows" name="sampling_strategy" value="first_rows" checked>
+                <label for="sampling_first_rows" style="display: inline; margin-top: 0;">First Rows (Default)</label>
+            </div>
+            <div>
+                <input type="radio" id="sampling_token_range" name="sampling_strategy" value="token_range">
+                <label for="sampling_token_range" style="display: inline; margin-top: 0;">Token Range (Sample across partitions)</label>
+                <small style="display: block; margin-left: 20px; color: #6c757d;">Requires Document Limit. Fetches samples distributed across the token range.</small>
+            </div>
+        </div>
+        <!-- End Sampling Strategy Selection -->
+
         <button id="preview-docs-button" style="margin-top: 1em;">Preview Sampled Documents</button>
         <button id="generate-config-button" disabled>Generate Projector Config & TSV</button>
     </section>

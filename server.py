@@ -16,6 +16,8 @@ from fastapi.responses import PlainTextResponse
 import numpy as np
 from astrapy.table import Table
 from astrapy.info import ColumnType, TableVectorColumnTypeDescriptor
+from typing import Literal
+import data_fetcher # Import the new module
 
 # Configuration
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -70,6 +72,8 @@ class SaveConfigRequest(BaseModel):
     table_name: str | None = None
     vector_column: str | None = None
     primary_key_columns: list[str] | None = None
+    partition_key_columns: list[str] | None = None
+    sampling_strategy: Literal["first_rows", "token_range"] = "first_rows"
 
 # Global DataAPIClient cache
 astra_data_api_clients = {}
@@ -403,74 +407,99 @@ async def api_astra_sample_table_data(sample_request: TableSampleRequest):
 @app.post("/api/astra/save_data")
 async def save_astra_data(request: SaveConfigRequest):
     """Fetches data (from collection OR table), saves vectors (.bytes) and metadata (.tsv), updates config."""
-    logging.info(f"Received request to save data for tensor: {request.tensor_name}, Limit: {request.document_limit}")
-    
+    logging.info(f"Received request to save data for tensor: {request.tensor_name}, Limit: {request.document_limit}, Strategy: {request.sampling_strategy}")
+
     local_astra_data_dir = os.path.join(ROOT_DIR, "astra_data")
-    is_table_mode = bool(request.table_name and request.vector_column and request.primary_key_columns is not None)
+    is_table_mode = bool(request.table_name and request.vector_column) # Simplified check for table mode
+
+    # Validate inputs based on mode and strategy
+    if is_table_mode:
+        if not request.primary_key_columns:
+             raise HTTPException(status_code=422, detail="primary_key_columns are required for table mode.")
+        if request.sampling_strategy == "token_range":
+            if not request.partition_key_columns:
+                raise HTTPException(status_code=422, detail="partition_key_columns are required for token_range sampling strategy.")
+            if not request.document_limit or request.document_limit <= 0:
+                 raise HTTPException(status_code=422, detail="A positive document_limit is required for token_range sampling strategy.")
+    elif request.collection_name is None:
+         raise HTTPException(status_code=422, detail="collection_name is required when not in table mode.")
     
+    # Ensure vector dimension is positive
+    if request.vector_dimension <= 0:
+         raise HTTPException(status_code=422, detail="vector_dimension must be a positive integer.")
+
     logging.info(f"Save mode: {'Table' if is_table_mode else 'Collection'}")
 
     try:
         db = get_data_api_client(request.connection)
         documents = []
         target_name = "Unknown"
-
-        # --- Determine Projection --- 
-        projection = {}
         vector_key_name = ""
+
+        # --- Determine Projection ---
+        projection = {}
         if is_table_mode:
-             target_name = request.table_name
-             vector_key_name = request.vector_column
-             projection[vector_key_name] = True # Ensure vector column is included
-             # Include all metadata keys + primary key columns needed for processing
-             all_needed_keys = set(request.metadata_keys) | set(request.primary_key_columns)
-             for key in all_needed_keys:
-                  projection[key] = True
+            target_name = request.table_name
+            vector_key_name = request.vector_column
+            projection[vector_key_name] = True
+            # Ensure PK columns are included for processing later
+            all_needed_keys = set(request.metadata_keys) | set(request.primary_key_columns)
+            for key in all_needed_keys:
+                projection[key] = True
+            # Ensure partition keys are included if token range sampling (already covered by PK check above)
+            if request.sampling_strategy == "token_range":
+                 for key in request.partition_key_columns:
+                      projection[key] = True
+        else: # Collection mode
+            target_name = request.collection_name
+            vector_key_name = "$vector"
+            projection[vector_key_name] = True
+            for key in request.metadata_keys:
+                projection[key] = True
+            # Ensure _id is projected (collections implicitly have it, but explicit is safer)
+            if '_id' not in projection:
+                projection['_id'] = True
+
+        logging.debug(f"Final projection: {projection}")
+
+        # --- Fetch Data using Data Fetcher ---
+        if is_table_mode and request.sampling_strategy == "token_range":
+            logging.info(f"Using token_range strategy for table '{target_name}'")
+            documents = await data_fetcher.fetch_data_token_range(
+                db=db,
+                table_name=target_name,
+                partition_key_columns=request.partition_key_columns,
+                projection=projection,
+                total_limit=request.document_limit, # Already validated > 0
+                vector_column=vector_key_name
+            )
         else:
-             target_name = request.collection_name
-             vector_key_name = "$vector"
-             projection[vector_key_name] = True # Ensure vector field is included
-             # Include all selected metadata keys (assuming _id is handled correctly)
-             for key in request.metadata_keys:
-                  projection[key] = True 
-        
-        # Ensure _id is projected if needed (collections implicitly have it, tables might if named 'id')
-        if not is_table_mode and '_id' not in projection:
-             projection['_id'] = True
-        elif is_table_mode and 'id' in request.primary_key_columns and 'id' not in projection:
-            projection['id'] = True # Ensure explicit PK 'id' is included if selected
-
-        # --- Fetch Data --- 
-        find_options = {"projection": projection}
-        if request.document_limit and request.document_limit > 0:
-            find_options["limit"] = request.document_limit
-            logging.info(f"Fetching documents from '{target_name}' with projection and limit: {find_options}")
-        else:
-            logging.info(f"Fetching documents from '{target_name}' with projection (no limit): {projection}")
-
-        # --- Temporarily Add Filter to Suppress Specific Warning --- 
-        api_commander_logger = logging.getLogger('astrapy.utils.api_commander')
-        zero_filter_suppressor = SuppressZeroFilterWarning()
-        api_commander_logger.addFilter(zero_filter_suppressor)
-        # --- End Add Filter --- 
-
-        try:
-            if is_table_mode:
-                 table = db.get_table(request.table_name)
-                 documents = list(table.find(**find_options))
+            # Default to "first_rows" strategy for collections or if specified for tables
+            logging.info(f"Using first_rows strategy for {'table' if is_table_mode else 'collection'} '{target_name}'")
+            find_options = {"projection": projection}
+            # Apply limit only if using "first_rows" strategy and limit is provided
+            if request.document_limit and request.document_limit > 0:
+                 find_options["limit"] = request.document_limit
+                 logging.info(f"Applying limit: {request.document_limit}")
             else:
-                 collection = db.get_collection(request.collection_name)
-                 documents = list(collection.find(**find_options))
-        finally:
-            # --- Remove the specific filter --- 
-            api_commander_logger.removeFilter(zero_filter_suppressor)
-            # --- End Remove Filter --- 
+                 logging.info("No limit applied for fetch_data_first_rows.")
+            
+            documents = await data_fetcher.fetch_data_first_rows(
+                db=db,
+                target_name=target_name,
+                find_options=find_options,
+                is_table_mode=is_table_mode,
+                vector_key_name=vector_key_name
+            )
 
+        # --- Check if documents were found AFTER fetching ---
         if not documents:
-            logging.warning(f"No documents found in '{target_name}' with the specified projection/limit.")
-            raise HTTPException(status_code=404, detail=f"No documents found in '{target_name}'. Check if it's empty or the projection/limit filters out all docs.")
+            logging.warning(f"No documents found in '{target_name}' using the '{request.sampling_strategy}' strategy.")
+            # Consider if this should be a 404 or just proceed and save empty files
+            # Let's raise 404 for clarity, as processing will fail anyway
+            raise HTTPException(status_code=404, detail=f"No documents found in '{target_name}'. Check source, filters, or sampling strategy.")
 
-        # --- Prepare Output Directory --- 
+        # --- Prepare Output Directory ---
         try:
             os.makedirs(local_astra_data_dir, exist_ok=True)
             logging.info(f"Ensured output directory exists: {local_astra_data_dir}")
@@ -478,7 +507,7 @@ async def save_astra_data(request: SaveConfigRequest):
             logging.error(f"Could not create output directory {local_astra_data_dir}: {e}")
             raise HTTPException(status_code=500, detail=f"Server configuration error: Could not create data directory.")
 
-        # --- Prepare Filenames --- 
+        # --- Prepare Filenames ---
         sanitized_tensor_name = request.tensor_name.replace(" ", "_")
         logging.info(f"Sanitized tensor name: '{request.tensor_name}' -> '{sanitized_tensor_name}'")
         safe_tensor_name = "".join(c if c.isalnum() or c in ('_', '-') else '_' for c in sanitized_tensor_name)
@@ -488,19 +517,20 @@ async def save_astra_data(request: SaveConfigRequest):
         vector_file_path = os.path.join(local_astra_data_dir, f"{safe_tensor_name}.bytes")
         metadata_file_path = os.path.join(local_astra_data_dir, f"{safe_tensor_name}_metadata.tsv")
 
-        # --- Process Data --- 
+        # --- Process Data ---
         vectors = []
         metadata_rows = []
         metadata_header = []
         
         # Determine metadata header based on mode and PK
         if is_table_mode:
+             # Ensure primary_key_columns is not None (validated earlier)
              pk_cols = request.primary_key_columns
              if len(pk_cols) == 1:
                   pk_header = pk_cols[0]
                   metadata_header = [pk_header] + [k for k in request.metadata_keys if k != pk_header]
              else: # Multiple PK columns
-                  pk_header = "PRIMARY_KEY"
+                  pk_header = "PRIMARY_KEY" # Composite key identifier
                   metadata_header = [pk_header] + [k for k in request.metadata_keys if k not in pk_cols]
         else: # Collection mode
              pk_header = "_id"
@@ -517,7 +547,20 @@ async def save_astra_data(request: SaveConfigRequest):
             # Get vector
             doc_vector = doc.get(vector_key_name)
             if doc_vector is None or not isinstance(doc_vector, (list, DataAPIVector)):
-                 logging.warning(f"Document missing or has invalid vector type ({type(doc_vector)}). Skipping. Keys: {list(doc.keys())}")
+                 # Attempt to get PK for logging context
+                 pk_for_log = "(PK lookup failed)"
+                 try:
+                      if is_table_mode and request.primary_key_columns:
+                           if len(request.primary_key_columns) == 1:
+                                pk_for_log = str(doc.get(request.primary_key_columns[0], "(missing)"))
+                           else:
+                                pk_parts = [str(doc.get(k, "(missing)")) for k in request.primary_key_columns]
+                                pk_for_log = "_".join(pk_parts)
+                      elif not is_table_mode:
+                           pk_for_log = str(doc.get("_id", "(missing)"))
+                 except Exception: pass # Ignore errors during logging lookup
+
+                 logging.warning(f"Doc PK='{pk_for_log}': Missing or invalid vector type ({type(doc_vector)}). Vector key: '{vector_key_name}'. Skipping. Doc keys: {list(doc.keys())}")
                  skipped_vector_count += 1
                  continue
 
@@ -541,15 +584,16 @@ async def save_astra_data(request: SaveConfigRequest):
 
             # Generate primary key string for metadata
             pk_value_str = ""
+            missing_pk = False
             if is_table_mode:
-                 pk_cols = request.primary_key_columns
+                 pk_cols = request.primary_key_columns # Already checked not None
                  if len(pk_cols) == 1:
                       pk_val = doc.get(pk_cols[0])
                       if pk_val is None:
                            logging.warning(f"Document missing primary key value for '{pk_cols[0]}'. Skipping.")
-                           skipped_pk_count += 1
-                           continue
-                      pk_value_str = str(pk_val)
+                           missing_pk = True
+                      else:
+                           pk_value_str = str(pk_val)
                  else: # Multiple PKs
                       pk_parts = []
                       missing_part = False
@@ -560,18 +604,22 @@ async def save_astra_data(request: SaveConfigRequest):
                                 missing_part = True
                                 break
                            # Sanitize parts slightly before joining
-                           pk_parts.append(str(part_val).replace('_', '-').replace('\t', ' ').replace('\n', ' ').replace('\r', ' ')) 
+                           pk_parts.append(str(part_val).replace('_', '-').replace('\\t', ' ').replace('\\n', ' ').replace('\\r', ' '))
                       if missing_part:
-                           skipped_pk_count += 1
-                           continue
-                      pk_value_str = "_".join(pk_parts)
+                           missing_pk = True
+                      else:
+                           pk_value_str = "_".join(pk_parts) # This is the value for the composite PRIMARY_KEY column
             else: # Collection mode
                  _id_val = doc.get("_id")
                  if _id_val is None:
                      logging.warning(f"Document missing '_id'. Skipping.")
-                     skipped_pk_count += 1
-                     continue
-                 pk_value_str = str(_id_val)
+                     missing_pk = True
+                 else:
+                     pk_value_str = str(_id_val)
+
+            if missing_pk:
+                skipped_pk_count += 1
+                continue # Skip doc if PK is missing
 
             # Add vector to list
             vectors.append(np_vector)
@@ -579,26 +627,27 @@ async def save_astra_data(request: SaveConfigRequest):
             # Build metadata row
             row_data = []
             for key in metadata_header:
-                 if key == pk_header: # Handle the explicitly generated PK string
-                     value_str = pk_value_str.replace('\t', ' ').replace('\n', ' ').replace('\r', ' ')
+                 if key == pk_header: # Handle the explicitly generated PK string (single or composite)
+                     value_str = pk_value_str.replace('\\t', ' ').replace('\\n', ' ').replace('\\r', ' ')
                  else:
                      # For other keys, get value directly from doc
-                     value = doc.get(key, '')
-                     value_str = str(value).replace('\t', ' ').replace('\n', ' ').replace('\r', ' ')
+                     value = doc.get(key, '') # Default to empty string if metadata key is missing
+                     value_str = str(value).replace('\\t', ' ').replace('\\n', ' ').replace('\\r', ' ')
                  row_data.append(value_str)
             metadata_rows.append("\t".join(row_data))
             processed_doc_count += 1
 
+        # --- Log processing summary ---
         logging.info(f"Processed {processed_doc_count} documents. Skipped: {skipped_vector_count} (vector issue), {skipped_dimension_count} (dimension issue), {skipped_pk_count} (PK issue).")
 
         if not vectors:
-            error_detail = "No valid vector data found after processing." 
+            error_detail = "No valid vector data found after processing."
             if skipped_vector_count > 0 or skipped_dimension_count > 0 or skipped_pk_count > 0:
                  error_detail += f" Skipped docs breakdown: VectorIssue={skipped_vector_count}, DimensionIssue={skipped_dimension_count}, PKIssue={skipped_pk_count}."
             logging.error(error_detail)
             raise HTTPException(status_code=400, detail=error_detail)
 
-        # --- Save Files --- 
+        # --- Save Files ---
         vector_data = np.array(vectors) # Re-create numpy array from list of arrays
         logging.info(f"Attempting to save {len(vectors)} vectors ({vector_data.nbytes} bytes) to {vector_file_path}")
         try:
@@ -615,7 +664,7 @@ async def save_astra_data(request: SaveConfigRequest):
         logging.info(f"Attempting to save metadata for {len(metadata_rows)} documents to {metadata_file_path}")
         try:
             with open(metadata_file_path, 'w', encoding='utf-8') as mf:
-                mf.write("\t".join(metadata_header) + "\n")
+                mf.write("\t".join(metadata_header) + "\n") 
                 mf.write("\n".join(metadata_rows))
             logging.info(f"Successfully saved metadata to {metadata_file_path}")
         except IOError as e:
@@ -625,7 +674,7 @@ async def save_astra_data(request: SaveConfigRequest):
             logging.exception(f"Unexpected error saving metadata file {metadata_file_path}")
             raise HTTPException(status_code=500, detail=f"Unexpected error writing metadata file: {str(e)}")
 
-        # --- Update Config File --- 
+        # --- Update Config File ---
         config = {}
         config_file_path = os.path.join(local_astra_data_dir, "astra_projector_config.json")
         logging.info(f"Attempting to read and update config file: {config_file_path}")
@@ -680,24 +729,37 @@ async def save_astra_data(request: SaveConfigRequest):
              logging.exception(f"Unexpected error writing updated config file {config_file_path}")
              raise HTTPException(status_code=500, detail=f"Unexpected error writing config file: {str(e)}")
 
-        config_relative_path = os.path.relpath(config_file_path, ROOT_DIR).replace('\\', '/') # Ensure forward slashes
+        # --- Return Success Response ---
+        config_relative_path = os.path.relpath(config_file_path, ROOT_DIR).replace('\\\\', '/') # Ensure forward slashes
         logging.info(f"Returning config path relative to root: {config_relative_path}")
-        return {"message": f"Successfully saved data for tensor '{sanitized_tensor_name}'", 
+        return {"message": f"Successfully saved data for tensor '{sanitized_tensor_name}' using '{request.sampling_strategy}' strategy",
                 "vector_file": os.path.basename(vector_file_path),
                 "metadata_file": os.path.basename(metadata_file_path),
-                "config_file": config_relative_path, 
+                "config_file": config_relative_path,
                 "vectors_saved": len(vectors),
-                "limit_applied": request.document_limit,
-                "tensor_name": sanitized_tensor_name, 
+                "limit_applied": request.document_limit if request.sampling_strategy == 'token_range' or (request.document_limit and request.document_limit > 0) else None,
+                "tensor_name": sanitized_tensor_name,
                 "tensor_shape": [len(vectors), request.vector_dimension],
-                "tensor_path_rel": os.path.relpath(vector_file_path, ROOT_DIR).replace('\\', '/'),
-                "metadata_path_rel": os.path.relpath(metadata_file_path, ROOT_DIR).replace('\\', '/')
+                "tensor_path_rel": os.path.relpath(vector_file_path, ROOT_DIR).replace('\\\\', '/'),
+                "metadata_path_rel": os.path.relpath(metadata_file_path, ROOT_DIR).replace('\\\\', '/')
                 }
 
     except HTTPException as e:
+        # Log and re-raise HTTPExceptions (like 404, 422, etc.)
         logging.error(f"HTTP Exception during save_astra_data: Status={e.status_code}, Detail='{e.detail}'")
         raise e
+    except ValueError as e:
+         # Catch ValueErrors from get_data_api_client or data_fetcher validation
+         logging.error(f"ValueError during save_astra_data: {e}")
+         # Return as 400 Bad Request or 422 Unprocessable Entity
+         status_code = 400
+         if "Partition key columns must be provided" in str(e) or "Total limit must be positive" in str(e):
+              status_code = 422 
+         elif "Authentication failed" in str(e) or "Failed to connect" in str(e):
+              status_code = 400 # Keep as bad request for connection issues
+         raise HTTPException(status_code=status_code, detail=str(e)) from e
     except Exception as e:
+        # Catch any other unexpected errors
         logging.exception("Unexpected error during save_astra_data process")
         raise HTTPException(status_code=500, detail=f"An internal server error occurred. Check server logs for details.")
 
