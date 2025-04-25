@@ -79,7 +79,9 @@ connectCollectionsButton.addEventListener('click', async () => {
     isTableMode = false;
     showStatus('Connecting and fetching collections...');
     resetUIForNewConnection();
-    samplingStrategyGroup.classList.add('hidden');
+    samplingStrategyGroup.classList.remove('hidden');
+    document.getElementById('token_range_option').classList.add('hidden');
+    document.getElementById('distributed_option').classList.remove('hidden');
 
     const formData = new FormData(connectionForm);
     const data = Object.fromEntries(formData.entries());
@@ -176,7 +178,9 @@ function populateCollections(collectionDetails) {
             metadataSelectionSection.classList.add('hidden');
             samplingPreviewSection.classList.add('hidden');
             configSection.classList.add('hidden');
-            samplingStrategyGroup.classList.add('hidden');
+            samplingStrategyGroup.classList.remove('hidden');
+            document.getElementById('token_range_option').classList.add('hidden');
+            document.getElementById('distributed_option').classList.remove('hidden');
             generateConfigButton.disabled = true;
             metadataKeysListDiv.innerHTML = '';
             sampleDataContainer.innerHTML = '';
@@ -247,7 +251,9 @@ connectTablesButton.addEventListener('click', async (event) => {
     isTableMode = true;
     showStatus('Connecting and fetching tables...');
     resetUIForNewConnection();
-    samplingStrategyGroup.classList.add('hidden');
+    samplingStrategyGroup.classList.remove('hidden');
+    document.getElementById('token_range_option').classList.remove('hidden');
+    document.getElementById('distributed_option').classList.add('hidden');
 
     const formData = new FormData(connectionForm);
     const data = Object.fromEntries(formData.entries());
@@ -433,6 +439,8 @@ function resetUIForNewConnection() {
     samplingPreviewSection.classList.add('hidden');
     configSection.classList.add('hidden');
     samplingStrategyGroup.classList.add('hidden');
+    document.getElementById('token_range_option').classList.add('hidden');
+    document.getElementById('distributed_option').classList.add('hidden');
     sampleButton.disabled = true;
     sampleTableButton.disabled = true;
     generateConfigButton.disabled = true;
@@ -456,6 +464,7 @@ function resetUIForNewConnection() {
     docLimitInput.value = '';
     firstRowsRadio.checked = true;
     tokenRangeRadio.checked = false;
+    document.getElementById('sampling_distributed').checked = false;
 }
 
 // Update document limit help text based on count
@@ -531,6 +540,14 @@ async function getMetadataKeys(sampleData, isTable = false) {
             showStatus('Sample data fetched. Select metadata fields to include.');
             metadataSelectionSection.classList.remove('hidden');
             samplingPreviewSection.classList.add('hidden');
+            samplingStrategyGroup.classList.remove('hidden');
+            if (isTable) {
+                document.getElementById('token_range_option').classList.remove('hidden');
+                document.getElementById('distributed_option').classList.add('hidden');
+            } else {
+                document.getElementById('token_range_option').classList.add('hidden');
+                document.getElementById('distributed_option').classList.remove('hidden');
+            }
             previewDocsButton.disabled = currentSampleData.length === 0;
             generateConfigButton.disabled = false;
             

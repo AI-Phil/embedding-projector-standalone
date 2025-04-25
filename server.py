@@ -77,7 +77,7 @@ class SaveConfigRequest(BaseModel):
     vector_column: str | None = None
     primary_key_columns: list[str] | None = None
     partition_key_columns: list[str] | None = None
-    sampling_strategy: Literal["first_rows", "token_range"] = "first_rows"
+    sampling_strategy: Literal["first_rows", "token_range", "distributed"] = "first_rows"
 
 # Global DataAPIClient cache
 astra_data_api_clients = {}
@@ -440,6 +440,9 @@ async def save_astra_data(request: SaveConfigRequest):
                  raise HTTPException(status_code=422, detail="A positive document_limit is required for token_range sampling strategy.")
     elif request.collection_name is None:
          raise HTTPException(status_code=422, detail="collection_name is required when not in table mode.")
+    elif request.sampling_strategy == "distributed":
+        if not request.document_limit or request.document_limit <= 0:
+            raise HTTPException(status_code=422, detail="A positive document_limit is required for distributed sampling strategy.")
     
     if request.vector_dimension <= 0:
          raise HTTPException(status_code=422, detail="vector_dimension must be a positive integer.")
@@ -485,6 +488,15 @@ async def save_astra_data(request: SaveConfigRequest):
                 projection=projection,
                 total_limit=request.document_limit,
                 vector_column=vector_key_name
+            )
+        elif not is_table_mode and request.sampling_strategy == "distributed":
+            logging.info(f"Using distributed strategy for collection '{target_name}'")
+            documents = await data_fetcher.fetch_data_distributed(
+                db=db,
+                collection_name=target_name,
+                projection=projection,
+                total_limit=request.document_limit,
+                vector_key_name=vector_key_name
             )
         else:
             logging.info(f"Using first_rows strategy for {'table' if is_table_mode else 'collection'} '{target_name}'")

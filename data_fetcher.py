@@ -203,3 +203,93 @@ async def fetch_data_token_range(
         all_sampled_docs = all_sampled_docs[:total_limit]
 
     return all_sampled_docs 
+
+async def fetch_data_distributed(
+    db: Database,
+    collection_name: str,
+    projection: Dict[str, Any],
+    total_limit: int,
+    vector_key_name: str
+) -> List[Dict[str, Any]]:
+    """Fetch data by sampling across different segments of the collection.
+    
+    This function samples data by:
+    1. Getting the total document count
+    2. Dividing the collection into segments
+    3. Fetching documents from each segment using pagination
+    
+    Args:
+        db: Database instance to query
+        collection_name: Name of the collection to query
+        projection: Fields to include in the result
+        total_limit: Maximum number of documents to return
+        vector_key_name: Name of the vector field
+        
+    Returns:
+        List of sampled documents from across the collection
+        
+    Raises:
+        ValueError: If limit is invalid
+        HTTPException: If the collection doesn't exist or other errors occur
+    """
+    if total_limit <= 0:
+        raise ValueError("Total limit must be positive for distributed sampling.")
+
+    logging.info(f"Fetching data using 'distributed' strategy from collection '{collection_name}'. Total limit: {total_limit}")
+
+    collection = db.get_collection(collection_name)
+    all_sampled_docs = []
+    num_segments = 10  # Number of segments to sample from
+    
+    try:
+        # Get total document count
+        total_count = collection.estimated_document_count()
+        if total_count == 0:
+            logging.warning(f"Collection '{collection_name}' appears to be empty.")
+            return []
+            
+        # Calculate segment size and documents per segment
+        segment_size = total_count // num_segments
+        docs_per_segment = max(1, math.ceil(total_limit / num_segments))
+        
+        logging.info(f"Collection size: {total_count}, Segment size: {segment_size}, Docs per segment: {docs_per_segment}")
+        
+        for i in range(num_segments):
+            # Calculate skip value for this segment
+            skip = i * segment_size
+            
+            # Fetch documents from this segment
+            find_options = {
+                "projection": projection,
+                "limit": docs_per_segment,
+                "skip": skip
+            }
+            
+            try:
+                cursor = collection.find(**find_options)
+                segment_docs = list(cursor)
+                logging.debug(f"Segment {i+1}: Fetched {len(segment_docs)} documents.")
+                all_sampled_docs.extend(segment_docs)
+                
+            except Exception as e:
+                logging.error(f"Error fetching segment {i+1} (skip={skip}): {e}")
+                # Continue with other segments even if one fails
+                
+        logging.info(f"Finished distributed sampling. Total sampled documents: {len(all_sampled_docs)}")
+        
+    except Exception as e:
+        logging.exception(f"Error during 'distributed' fetch from collection '{collection_name}'")
+        err_str = str(e).lower()
+        not_found_keywords = ["not found", "does not exist", "doesn't exist"]
+        is_not_found_error = any(keyword in err_str for keyword in not_found_keywords) and f"'{collection_name}'" in err_str
+        if is_not_found_error:
+            raise HTTPException(status_code=404, detail=f"Collection '{collection_name}' not found.")
+        else:
+            raise HTTPException(status_code=500, detail=f"An unexpected error occurred during distributed fetch: {e}") from e
+
+    # Trim results if we collected more than total_limit
+    if len(all_sampled_docs) > total_limit:
+        logging.info(f"Trimming distributed results from {len(all_sampled_docs)} to {total_limit}")
+        all_sampled_docs = all_sampled_docs[:total_limit]
+
+    return all_sampled_docs 
