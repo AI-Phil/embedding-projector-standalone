@@ -1,1 +1,4 @@
 ﻿astra_data
+check_dimensions.py
+extraction.csv
+load_data.py

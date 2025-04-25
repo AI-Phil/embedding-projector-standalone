@@ -71,7 +71,8 @@
                 <label for="keyspace">Keyspace/Namespace (Optional):</label>
                 <input type="text" id="keyspace" name="keyspace" placeholder="default_keyspace">
             </div>
-            <button type="submit">Connect & List Collections</button>
+            <button type="button" id="connect-collections-button">List Collections</button>
+            <button type="button" id="connect-tables-button">List CQL Tables</button>
         </form>
     </section>
 
@@ -83,9 +84,17 @@
         <button id="sample-button" disabled>Fetch Sample & Metadata Keys</button>
     </section>
 
+    <section id="tables-section" class="hidden">
+        <h2>2. Select Table and Vector Column</h2>
+        <div id="tables-list">
+            <!-- Table list will be populated here -->
+        </div>
+        <button id="sample-table-button" disabled>Fetch Sample & Metadata Keys</button>
+    </section>
+
     <section id="metadata-selection-section" class="hidden">
         <h2>3. Select Metadata Fields</h2>
-        <p>Select the fields to include in the metadata TSV file. The <code>_id</code> field is selected by default.</p>
+        <p>Select the fields to include in the metadata TSV file. The primary identifier (<code>_id</code> for collections, or derived primary key for tables) will be included automatically.</p>
         <div id="metadata-keys-list">
             <!-- Checkboxes for metadata keys will be populated here -->
         </div>
@@ -111,19 +120,14 @@
 
     <section id="config-section" class="hidden">
         <h2>4. Generated Configuration & Metadata</h2>
-        <p>Save the following content into files (`config.json`, `data.json`, `metadata.tsv`) in your projector directory:</p>
+        <p>The server has saved the vector data, metadata, and updated the projector configuration file (`astra_data/astra_projector_config.json`). The following entry was added/updated:</p>
+        
         <div>
-            <label for="config-json">config.json:</label>
-            <textarea id="config-json" rows="10" cols="80" readonly></textarea>
+            <label for="config-details-json">Tensor Entry Added/Updated in Config:</label>
+            <pre><code id="config-details-json" style="display: block; white-space: pre-wrap; word-wrap: break-word; background-color: #f4f4f4; padding: 1em; border: 1px solid #ddd;"></code></pre>
         </div>
-        <div>
-            <label for="data-json">data.json (Vector Data Only):</label>
-            <textarea id="data-json" rows="10" cols="80" readonly></textarea>
-        </div>
-        <div>
-            <label for="metadata-tsv">metadata.tsv:</label>
-            <textarea id="metadata-tsv" rows="10" cols="80" readonly></textarea>
-        </div>
+
+        <!-- Link will be appended here by JS -->
     </section>
 
     <hr>
