@@ -9,6 +9,7 @@ from fastapi import HTTPException
 
 # Custom filter class definition (copied from server.py)
 class SuppressZeroFilterWarning(logging.Filter):
+    """Filter to suppress zero filter operation warnings from astrapy."""
     def filter(self, record):
         return 'ZERO_FILTER_OPERATIONS' not in record.getMessage()
 
@@ -19,7 +20,21 @@ async def fetch_data_first_rows(
     is_table_mode: bool,
     vector_key_name: str # Added for logging consistency if needed later
 ) -> List[Dict[str, Any]]:
-    """Fetches the first N documents/rows based on find_options."""
+    """Fetch the first N documents/rows based on find_options.
+    
+    Args:
+        db: Database instance to query
+        target_name: Name of the collection or table
+        find_options: Options for the find operation (limit, projection, etc.)
+        is_table_mode: Whether to query a table (True) or collection (False)
+        vector_key_name: Name of the vector field for logging purposes
+        
+    Returns:
+        List of documents/rows from the query
+        
+    Raises:
+        HTTPException: If the target doesn't exist or other errors occur
+    """
     logging.info(f"Fetching data using 'first_rows' strategy from {'table' if is_table_mode else 'collection'} '{target_name}' with options: {find_options}")
     
     documents = []
@@ -76,12 +91,29 @@ async def fetch_data_token_range(
     total_limit: int,
     vector_column: str # Pass vector column name for consistency checks later if needed
 ) -> List[Dict[str, Any]]:
-    """Fetches data by sampling across 10 token range parts.
-
-    WARNING: This function assumes the underlying Data API and astrapy's find
-    method support filtering directly on 'token(...)'. This might not be the case.
-    If this fails, a different approach (e.g., using paging or accepting limitations)
-    may be required.
+    """Fetch data by sampling across 10 token range parts.
+    
+    This function samples data by dividing the token range into 10 parts and fetching
+    documents from each part. This helps get a more distributed sample of the data.
+    
+    Note: This function assumes the underlying Data API and astrapy's find method
+    support filtering directly on 'token(...)'. If this fails, a different approach
+    (e.g., using paging or accepting limitations) may be required.
+    
+    Args:
+        db: Database instance to query
+        table_name: Name of the table to query
+        partition_key_columns: List of partition key column names
+        projection: Fields to include in the result
+        total_limit: Maximum number of documents to return
+        vector_column: Name of the vector column for logging purposes
+        
+    Returns:
+        List of sampled documents from across the token ranges
+        
+    Raises:
+        ValueError: If partition key columns are missing or limit is invalid
+        HTTPException: If the table doesn't exist or other errors occur
     """
     if not partition_key_columns:
         raise ValueError("Partition key columns must be provided for token range sampling.")
@@ -138,13 +170,13 @@ async def fetch_data_token_range(
                 all_sampled_docs.extend(sampled_range_docs)
 
             except Exception as e:
-                 # Log error for specific range but continue to try other ranges
-                 logging.error(f"Error fetching or processing token range {i+1} ({range_start} to {range_end}): {e}")
-                 # Check if the error suggests token() is unsupported
-                 if "token function is not supported" in str(e).lower() or "unable to make query" in str(e).lower() or "invalid filter" in str(e).lower():
-                     logging.error(f"Failed query might indicate token() filtering is not supported by the API/astrapy. Query options: {find_options}")
-                     # Depending on requirements, we might want to raise an exception here or just log and return potentially incomplete results
-                     # For now, just log and continue
+                # Log error for specific range but continue to try other ranges
+                logging.error(f"Error fetching or processing token range {i+1} ({range_start} to {range_end}): {e}")
+                # Check if the error suggests token() is unsupported
+                if "token function is not supported" in str(e).lower() or "unable to make query" in str(e).lower() or "invalid filter" in str(e).lower():
+                    logging.error(f"Failed query might indicate token() filtering is not supported by the API/astrapy. Query options: {find_options}")
+                    # Depending on requirements, we might want to raise an exception here or just log and return potentially incomplete results
+                    # For now, just log and continue
 
         logging.info(f"Finished token range queries. Total sampled documents: {len(all_sampled_docs)}")
 
@@ -159,7 +191,7 @@ async def fetch_data_token_range(
             logging.error(f"Table '{table_name}' not found: {e}")
             raise HTTPException(status_code=404, detail=f"Table '{table_name}' not found.")
         else:
-             raise HTTPException(status_code=500, detail=f"An unexpected error occurred during token range fetch: {e}") from e
+            raise HTTPException(status_code=500, detail=f"An unexpected error occurred during token range fetch: {e}") from e
     finally:
         # --- Remove the specific filter --- 
         api_commander_logger.removeFilter(zero_filter_suppressor)
