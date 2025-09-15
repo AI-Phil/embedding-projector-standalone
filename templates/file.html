@@ -281,7 +281,22 @@
             let arr = null;
             try {
                 if (trimmedValue.startsWith('[') && trimmedValue.endsWith(']')) {
-                    arr = JSON.parse(trimmedValue);
+                    // Handle numpy array string format
+                    if (trimmedValue.includes('...')) {
+                        throw new Error('Ellipsis detected, is numpy array truncated?');
+                        return null;
+                    }
+                    
+                    // Try JSON parsing first
+                    try {
+                        arr = JSON.parse(trimmedValue);
+                    } catch (jsonError) {
+                        // If JSON fails, handle numpy-style whitespace-separated format
+                        const cleaned = trimmedValue.slice(1, -1).trim(); // Remove brackets
+                        const withoutNewlines = cleaned.replace(/\n/g, ' '); // Remove newlines
+                        const withoutExtraSpaces = withoutNewlines.replace(/\s+/g, ' '); // Normalize spaces
+                        arr = withoutExtraSpaces.split(' ').map(s => s.trim()).filter(s => s !== '');
+                    }
                 } else {
                     const cleaned = trimmedValue.replace(/^[\(\[]|[\]\)]$/g, '').trim();
                     const delimiter = cleaned.includes(',') ? ',' : /\s+/;
@@ -307,7 +322,6 @@
             }
             return numericArr;
         }
-
         // Helper function to format vector preview
         function formatVectorPreview(vector) {
             if (!vector || vector.length === 0) return '';
